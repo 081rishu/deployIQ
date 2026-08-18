@@ -1,0 +1,133 @@
+AI DEPLOYMENT DECISION ENGINE
+FULL PRODUCT VISION (not MVP scope — long-term reference)
+
+This document captures the full product thesis and where the MVP sits
+inside it. The MVP specs (v1-v4) are a deliberately constrained slice
+of this. Nothing here is scoped for the current build — kept
+separate so the MVP docs stay lean and this stays the place to check
+"where does this fit in the bigger picture."
+
+
+1. CORE THESIS
+
+Not an AI ROI calculator. An AI-assisted deployment decision system
+answering: "Should we deploy AI here, and if so, what is the
+economically and operationally sensible way to do it?"
+
+Core principle: AI capability != AI suitability. A technically
+solvable problem is not necessarily an economically worthwhile AI
+problem. The system must be capable of steering away from AI, and — as
+of MVP spec v4 — even capable of declining to prescribe an answer at
+all, instead surfacing the facts a human needs to apply their own
+judgment.
+
+
+2. THE FULL WORKFLOW (MVP builds one vertical slice of this)
+
+Business Problem
+  -> AI Interviewer (adaptive, state-driven)
+  -> Structured Process Model
+  -> Identify Missing Inputs
+  -> Sector Benchmark Cross-Reference
+  -> External Data Research (live, in the full product; static in MVP)
+  -> Evidence + Assumptions (5-tag provenance system)
+  -> Economic / Operational Model
+       -> Current Process baseline
+       -> AI Alternatives (multiple architectures compared, not just
+          one proposed approach)
+  -> Scenario Analysis (multi-variable, not just 2-3 sensitivity
+     variables)
+  -> Scored, ranked Decision Drivers (not a forced category)
+  -> Cited Decision Report
+
+
+3. WHAT THE MVP INTENTIONALLY LEAVES OUT
+
+- Only 2 sectors (full product: broad sector coverage, ideally
+  user-extensible sector packs rather than a hardcoded pair)
+- Static benchmark packs (full product: live-updated benchmark
+  sourcing with a proper source registry and refresh cadence)
+- No persistence (full product: saved assessments, revisit/update
+  over time, track how estimates compared to actual outcomes)
+- No multi-architecture comparison (full product: compare several
+  concrete AI architectures side by side — e.g. small fine-tuned model
+  vs. RAG+LLM vs. agentic system — each separately costed, not just
+  one proposed approach plus qualitative alternatives)
+- No organization-specific data integration (full product: pull real
+  salary/infra numbers from the org's own systems rather than
+  benchmarks/user estimates)
+- No feedback loop (full product: capture actual pilot results and
+  post-deployment measurements, use them to calibrate future
+  estimates — this is the piece that would make the system's ranges
+  get more honest over time instead of staying static)
+- Single-session tool (full product: multi-user, org accounts, shared
+  assessment history)
+
+
+4. PRODUCT DECISIONS MADE DURING SCOPING (kept for the record)
+
+These are decisions made while narrowing the original brief into a
+buildable MVP — documented here since they reflect real product
+judgment, separate from pure scope-cutting:
+
+4.1 Scores explain, they don't decide.
+Economic/Feasibility/Risk scores are indicators for a human to read,
+not inputs to a formula that spits out a category. This was a
+deliberate move away from "the system decides" toward "the system
+informs."
+
+4.2 No prescriptive recommendation at all.
+Taken further than 4.1 — the system was originally going to output
+BUILD/PILOT/DON'T BUILD, then moved to a scored composite, then
+finally to Decision Drivers with no label at all. The reasoning: a
+recommendation label implies the system knows the organization's risk
+tolerance, budget flexibility, and strategic priorities, which it
+doesn't. Ranked facts plus an explicit "here's the biggest
+uncertainty" respects that boundary instead of pretending to resolve
+it.
+
+4.3 Benchmarks are cross-checks, never silent inputs.
+Public sector data is useful for sanity-checking a user's numbers, not
+for quietly filling gaps in a way that launders industry averages
+into what looks like company-specific data. The user is always asked
+explicitly when a benchmark would be used to fill a gap.
+
+4.4 Ranges over false precision, everywhere.
+Applies to LLM-estimated numbers (automation rate, accuracy,
+integration complexity) and to engineering effort (bands, not exact
+hours). This runs through the whole system, not just one section — it
+is the practical expression of the "don't let the LLM invent
+financial certainty" principle from the original brief.
+
+4.5 Five-tag provenance system.
+user_provided / sourced / estimated / assumed / derived. Every number
+in every output traces to exactly one of these. This is the
+transparency mechanism the entire product's credibility rests on —
+without it, this is just another confident-sounding calculator.
+
+
+5. LONGER-TERM EXTENSIONS (unchanged from original brief, still valid)
+
+- More industries and process templates, ideally as an extensible
+  pack format rather than hardcoded sectors
+- Larger, live source registry with proper refresh/versioning
+- Real-time cloud/model pricing lookups
+- Organization-specific salary and infrastructure data integration
+- More detailed workforce-impact modeling (redeployment vs. reduction,
+  second-order effects)
+- Probabilistic feasibility models (proper distributions instead of
+  simple ranges)
+- Actual pilot-result feedback loop
+- Post-deployment measurement and continuous ROI tracking
+- Integration with enterprise planning/budgeting systems
+- Side-by-side comparison of multiple implementation architectures
+- Automatic generation of pilot plans (what to validate, how, by when)
+
+
+6. HOW TO USE THIS DOCUMENT
+
+This is a reference, not a build target. When the MVP write-up asks
+"what would you build next and why," this document is the answer —
+pull directly from sections 3 and 5. When scoping any future
+iteration, check section 4 first so product decisions already reasoned
+through don't get silently reversed by a new feature request.

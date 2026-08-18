@@ -1,0 +1,80 @@
+"""Thin wrapper around the OpenAI SDK.
+
+Server-side only (called from FastAPI endpoints / the interviewer engine).
+The provider is OpenAI per the build decision (note: docs still say
+Anthropic — reconcile separately).
+
+Exposes a single helper that returns structured JSON, so the engine never
+parses free text.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any, Optional
+
+# Load env from .env.local if present (key lives there, gitignored).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(".env.local")
+except ImportError:
+    pass
+
+from openai import OpenAI
+
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+
+def _client() -> OpenAI:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set — add it to .env.local"
+        )
+    return OpenAI(api_key=api_key)
+
+
+def complete_json(
+    system: str,
+    user: str,
+    *,
+    temperature: float = 0.2,
+    model: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return a JSON object from the model.
+
+    Uses JSON-mode response_format so the result is always parseable.
+    """
+    client = _client()
+    resp = client.chat.completions.create(
+        model=model or MODEL,
+        temperature=temperature,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    content = resp.choices[0].message.content or "{}"
+    return json.loads(content)
+
+
+def complete_text(
+    system: str,
+    user: str,
+    *,
+    temperature: float = 0.3,
+    model: Optional[str] = None,
+) -> str:
+    client = _client()
+    resp = client.chat.completions.create(
+        model=model or MODEL,
+        temperature=temperature,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    return resp.choices[0].message.content or ""

@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Voice Interview</title>
+<link rel="icon" href="data:,"/>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  #log { white-space: pre-wrap; background: #f5f5f5; padding: 12px; border-radius: 8px; min-height: 200px; }
+  button { padding: 10px 16px; margin: 6px 6px 6px 0; font-size: 15px; }
+  .status { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Voice Interviewer <span style="font-size:12px;color:#888">v4</span></h1>
+<div>
+  <label>Sector:</label>
+  <select id="sector"><option value="customer_support">customer_support</option><option value="document_processing">document_processing</option></select>
+</div>
+<div><label>Problem:</label> <input id="problem" size="40" value="we want to automate support tickets"/></div>
+<div>
+  <button id="start">Start</button>
+  <button id="record" disabled>Hold to talk</button>
+  <button id="ping">Ping</button>
+</div>
+<div class="status" id="status"></div>
+<div id="log"></div>
+<audio id="player" controls style="display:none"></audio>
+<script>
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const player = document.getElementById('player');
+const startBtn = document.getElementById('start');
+const recordBtn = document.getElementById('record');
+const pingBtn = document.getElementById('ping');
+let ws = null, mediaRec = null, chunks = [], pendingStart = null;
+function log(s){ logEl.textContent += s + '\n'; }
+function setStatus(s){ statusEl.textContent = s; }
+function wsSend(obj){
+  if (!ws || ws.readyState !== WebSocket.OPEN){
+    log('error: socket not open (state=' + (ws ? ws.readyState : 'null') + ')');
+    return false;
+  }
+  ws.send(typeof obj === 'string' ? obj : JSON.stringify(obj));
+  return true;
+}
+function openWs(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  setStatus('connecting...');
+  ws = new WebSocket(proto + '://' + location.host + '/ws/interview/voice');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = function(){
+    log('connected');
+    setStatus('connected');
+    recordBtn.disabled = false;
+    if (pendingStart){ wsSend(pendingStart); pendingStart = null; }
+  };
+  ws.onerror = function(e){ log('ws error: ' + (e.message || 'unknown')); setStatus('error'); };
+  ws.onclose = function(e){ log('disconnected (' + e.code + ')'); setStatus('disconnected'); };
+  ws.onmessage = function(ev){
+    if (typeof ev.data !== 'string') return;
+    var m;
+    try { m = JSON.parse(ev.data); } catch(e) { log('bad message'); return; }
+    if (m.type === 'pong'){ log('pong'); return; }
+    if (m.type === 'error'){ log('server error: ' + m.message); setStatus('error: ' + m.message); return; }
+    setStatus('status: ' + m.status + ' | stop: ' + m.stop);
+    if (m.transcript) log('you: ' + m.transcript);
+    if (m.question) log('ai: ' + m.question);
+    if (m.audio){
+      try {
+        var bin = atob(m.audio);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var blob = new Blob([bytes], {type:'audio/mpeg'});
+        player.src = URL.createObjectURL(blob);
+        player.style.display='block';
+        player.play();
+      } catch (err){ log('audio play error: ' + err); }
+    }
+    if (m.stop){ recordBtn.disabled = true; }
+  };
+}
+startBtn.onclick = function(){
+  var msg = {action:'start', sector: document.getElementById('sector').value, problem: document.getElementById('problem').value};
+  if (!ws){ openWs(); pendingStart = msg; startBtn.disabled = true; log('connecting, will start when ready'); return; }
+  if (!wsSend(msg)){ pendingStart = msg; }
+};
+pingBtn.onclick = function(){ wsSend({action:'ping'}); };
+recordBtn.onmousedown = function(){
+  navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+    chunks = [];
+    mediaRec = new MediaRecorder(stream);
+    var mime = mediaRec.mimeType || 'audio/webm';
+    mediaRec.ondataavailable = function(e){ chunks.push(e.data); };
+    mediaRec.onstop = function(){
+      var blob = new Blob(chunks, {type: mime});
+      blob.arrayBuffer().then(function(buf){ if (!wsSend(buf)) log('could not send audio (socket not open)'); });
+      stream.getTracks().forEach(function(t){ t.stop(); });
+    };
+    mediaRec.start();
+    recordBtn.textContent = 'Recording... release to send';
+  }).catch(function(err){ log('mic error: ' + err); });
+};
+recordBtn.onmouseup = function(){ if (mediaRec){ mediaRec.stop(); mediaRec = null; recordBtn.textContent = 'Hold to talk'; } };
+</script>
+</body>
+</html>

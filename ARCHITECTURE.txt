@@ -1,0 +1,137 @@
+AI DEPLOYMENT DECISION ENGINE
+TECHNICAL ARCHITECTURE (MVP build — reflects spec v4)
+
+1. STACK
+
+FastAPI backend (Python). No database. The FastAPI service owns every LLM
+call and every deterministic calculation. A frontend/client is NOT in
+scope for now — it will be decided only if/when it becomes necessary.
+
+- Backend: FastAPI (Python), runs in the repo's `.venv`
+- API layer: FastAPI endpoints
+- LLM access: OpenAI Python SDK, called server-side only from
+  FastAPI — never from a client
+- State: passed back and forth between client and server each request;
+  nothing persists server-side between requests
+- Validation: Pydantic models for the structured assessment state,
+  enforced at the FastAPI boundary
+- Calc: pure Python functions (`calc/`), no LLM, no framework
+- Frontend/client: deferred — not built unless needed
+
+Rationale: with a 30-hour build and an AI coding assistant doing
+implementation, the bottleneck is deploy friction and context
+switching, not raw compute. A single Python process keeps the LLM
+calls and the deterministic math in one language, which removes a
+category of cross-language type drift. The venv already exists at
+`.venv/` (Python 3.13). Nothing in the MVP scope needs persistence
+across sessions or users.
+
+
+2. HIGH-LEVEL REQUEST FLOW
+
+Client <--> FastAPI endpoints <--> OpenAI API
+             |
+             v
+   Deterministic calc modules
+   (pure Python, no LLM)
+             |
+             v
+   Sector benchmark packs (static JSON)
+
+The client never calls the OpenAI API directly. Every LLM call
+goes through a FastAPI endpoint, which either returns LLM output
+directly (for language tasks) or feeds LLM output into a
+deterministic calculation function before returning (for anything
+numeric).
+
+
+3. MODULE BREAKDOWN
+
+3.1 /app/api/interview (FastAPI)
+Handles one interview turn. Input: current structured state + latest
+user message. Output: updated state (with provenance tags), next
+question text, stop boolean. Internally may be 1-2 LLM calls
+(extraction, question-generation — see interviewer spec for whether
+these collapse into one call).
+
+3.2 /app/api/ai-solution (FastAPI)
+Given completed interview state, returns the LLM-proposed AI approach,
+automation-rate range, accuracy range, integration-complexity band,
+engineering-effort band. Enforces range/band output, never a bare
+number (validated against a Pydantic model that requires min/max +
+confidence, not a single scalar).
+
+3.3 /calc/economic_score.py, feasibility_score.py, risk_score.py
+Pure Python functions. Input: structured state + AI solution estimate.
+Output: score (0-100) + interpretation band. No LLM calls anywhere in
+this layer — these are the modules that must be independently
+testable with hand-computed inputs before they touch the UI.
+
+3.4 /calc/cost_engine.py
+Implements the labor baseline (volume x time x cost), staged
+implementation costing with buy/build per stage, and the benchmark
+cross-check (comparison only, not additive — see spec v3 section 5).
+
+3.5 /calc/driver_ranking.py
+Sensitivity-weighted ranking function that selects which facts become
+Decision Drivers and which field is flagged as the biggest
+uncertainty. Depends on 3.3's score functions being complete, since
+ranking = "how much does this field move each score."
+
+3.6 /app/api/report (FastAPI)
+Takes final state + all calculated scores/drivers, calls the LLM once
+for prose generation (driver phrasing, interpretation sentences,
+alternatives comparison), inserts calculated numbers directly into
+the template rather than letting the LLM restate them. Every number in
+the output must trace back to a calc module or a benchmark pack entry,
+never to LLM free text.
+
+3.7 /data/sector_benchmarks/{customer_support,document_processing}.json
+Static benchmark packs per sector (spec v3 section 3). Loaded at
+request time, not fetched live.
+
+3.8 /schemas/assessment_state.py
+Single Pydantic model for the structured assessment state, shared by
+interview route, review screen, calc modules, and report generation.
+This is the source-of-truth type for the whole app — every module
+above imports from here rather than redefining shapes.
+
+
+4. SCREEN-TO-MODULE MAP
+
+The screens below describe the intended flow; a client/frontend is not
+built yet. Endpoints are exposed per the sections above.
+
+1. Intake — captures free text + sector choice
+2. Interview — calls 3.1 repeatedly
+3. Review — reads/edits state (no calculation until user proceeds);
+   benchmark-vs-user-value choices from spec v3 section 3.2 resolved
+4. Analysis — calls 3.2, then 3.3 + 3.4 (can be one combined
+   "calculate" endpoint or separate; combining is simpler for MVP)
+5. Decision Drivers — calls 3.5
+6. Report — calls 3.6
+
+
+5. WHAT DELIBERATELY IS NOT HERE
+
+- No database — session state lives and dies with the session
+- No frontend/client yet — deferred until needed
+- No auth — single-user, single-session tool for the MVP
+- No live external API calls for benchmark data — static JSON only
+- No PDF generation pipeline — report renders as styled HTML/markdown
+  in-app; export is a "print/save as PDF" browser action at most, not
+  a generated PDF file
+- No queue/job system — every LLM call is synchronous request/response
+
+
+6. WHY THIS SHAPE
+
+The architecture mirrors the spec's core engineering principle
+directly: LLM handles language (extraction, phrasing, proposing
+approaches), deterministic code handles every number (scores, costs,
+rankings, driver selection). The module boundaries in section 3 are
+drawn so that boundary is enforced structurally — the calc modules
+(3.3, 3.4, 3.5) have no LLM dependency and can be unit-tested with
+plain numbers before any UI or prompt exists, which is the fastest way
+to catch a wrong formula early rather than debugging it through a full
+LLM round-trip later.

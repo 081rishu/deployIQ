@@ -1,0 +1,60 @@
+
+============================================================
+SCENARIO: support_standard  (customer_support)
+PROBLEM: we want to automate support tickets
+============================================================
+[turn 0] status=interviewing need=missing
+  AI: Could you give me an idea of the monthly volume of support tickets your team handles? A rough range would be helpful, like a typical low and high bound.
+[turn 1] USER: we handle about 10k tickets a month with 15 agents
+  updated: ['monthly_volume=10000', 'current_headcount=15']
+  status=interviewing need=missing
+  AI: Could you give me an idea of how long it takes, on average, to handle one support ticket in minutes? If possible, a range would be helpful.
+[turn 2] USER: its ticket handling, each takes about 8 minutes, agents earn 600k a year loaded
+  updated: ['avg_time_per_unit_minutes=8', 'fully_loaded_annual_cost=600000']
+  status=interviewing need=missing
+  AI: What level of accuracy is required for the automated support ticket process? If you have a specific percentage in mind, that would be helpful.
+[turn 3] USER: accuracy needed is around 95 percent
+  updated: ["required_accuracy={'min': 0.95, 'max': 0.95}"]
+  status=interviewing need=missing
+  AI: What kind of existing data do you have that an AI could learn from, like chat logs or other records?
+[turn 4] USER: integration would be medium effort, data exists in the ticketing system
+  updated: ['integration_complexity=medium', 'existing_data=data exists in the ticketing system']
+  status=interviewing need=missing
+  AI: Could you tell me what tools or systems you're currently using for handling support tickets?
+[turn 5] USER: if the AI gets it wrong it causes customer harm, and we have gdpr constraints
+  updated: ['risk.failure_impact=customer harm', "risk.compliance_exposure=['gdpr']"]
+  status=ready need=None
+FINAL: status=ready complete=True
+  stop_reason=minimum sufficient state reached
+  filled_required=True vol=True time=True head=True acc=True int=True risk=True
+RESULT: PASS
+
+============================================================
+SCENARIO: support_ambiguous  (customer_support)
+PROBLEM: we want to automate support
+============================================================
+[turn 0] status=interviewing need=missing
+  AI: Could you give me an idea of the monthly transaction volume your team handles? A rough range or best estimate would be great.
+[turn 1] USER: we get a lot of tickets, maybe ten thousand a month
+  updated: ['monthly_volume=10000']
+  status=interviewing need=missing
+  AI: Could you give me an idea of how long it takes, on average, to handle each ticket? If possible, a rough range would be helpful.
+[turn 2] USER: handled by about 15 agents
+  updated: ['current_headcount=15']
+  status=interviewing need=missing
+  AI: Could you give me an idea of how long it takes, on average, to handle one unit? If you can, a range would be helpful—maybe a best estimate along with a low and high bound.
+[turn 3] USER: accuracy should be high
+  updated: ['required_accuracy=None']
+  status=clarifying need=ambiguous
+  AI: Could you specify what you mean by 'high' accuracy? Are we talking about 95% or higher, or something else?
+[turn 4] USER: medium integration effort
+  updated: ['integration_complexity=medium']
+  status=uncertain need=ambiguous
+[turn 5] USER: mistakes cause customer harm
+  updated: []
+  status=uncertain need=None
+FINAL: status=uncertain complete=True
+  stop_reason=already terminated
+  filled_required=True vol=True time=False head=True acc=False int=True risk=False
+RESULT: FAIL
+  FAIL: turn 3: field 'required_accuracy' reported but not retained in state

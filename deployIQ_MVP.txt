@@ -1,0 +1,527 @@
+AI DEPLOYMENT DECISION ENGINE
+MVP SPECIFICATION — CONSOLIDATED (final)
+=================================================
+
+This is the single consolidated MVP specification. It merges the v1-v4
+version history into one coherent final document, reflecting the current
+(final) state after all revisions. Where a decision evolved across
+versions, the consolidated text records the FINAL decision; the evolution
+itself is summarized in "REVISION HISTORY" at the end. This document, the
+ARCHITECTURE.txt stack, and README.md should agree with each other.
+
+The product thesis and long-term vision live in deployID_FULL_PRODUCT.txt.
+
+Sections 1-11 below are the complete, authoritative MVP spec.
+
+=================================================
+
+1. MVP OBJECTIVE
+
+Build a working vertical slice of an AI Deployment Decision Engine that
+helps an organization determine whether a proposed AI initiative is worth
+deploying. The MVP demonstrates the complete path from an ambiguous
+business problem to an evidence-backed, economically reasoned assessment.
+
+The goal is NOT a complete enterprise AI economics platform. The goal is
+to demonstrate the core product thesis and engineering decisions.
+
+2. CORE PRODUCT THESIS
+
+This is NOT an AI ROI calculator. It is an AI-assisted deployment
+decision system.
+
+Core question:
+"Should we deploy AI here, and if so, what is the economically and
+operationally sensible way to do it?"
+
+The system must be willing to steer AWAY from AI when warranted.
+
+Core principle: AI capability != AI suitability. A technically solvable
+problem is not necessarily an economically worthwhile AI problem. The
+system can even decline to prescribe an answer at all, instead surfacing
+the facts a human needs to apply their own judgment.
+
+3. CORE PRODUCT FLOW
+
+Business problem
+-> AI interviewer (adaptive, state-driven)
+-> Structured assessment state
+-> Identify missing inputs
+-> Sector benchmark cross-reference
+-> AI solution estimation
+-> Deterministic economic engine
+-> Scenario / sensitivity analysis
+-> Scored, ranked Decision Drivers (not a forced category)
+-> Cited decision report
+
+The final output is a ranked list of Decision Drivers plus an explicit
+uncertainty callout. The system does NOT output a category
+(BUILD/PILOT/DON'T BUILD) and does NOT prescribe a verdict.
+
+4. LOCKED SECTORS
+
+Two sectors, chosen for clean, cross-verifiable public benchmark data and
+for being structurally different processes (real-time conversational vs.
+batch document processing) so the economic engine has to genuinely flex:
+
+4.1 Customer Support Automation
+Sources: Zendesk CX Trends reports, Gartner/HDI cost-per-ticket
+benchmarks, Glassdoor/Levels.fyi salary data (India + US), Anthropic/
+OpenAI API pricing pages.
+Ground-truth figures: cost per ticket, average handling time, tickets per
+agent per day, fully loaded agent salary, automation adoption rate.
+
+4.2 Document / Invoice Processing (Accounts Payable / back-office)
+Sources: Ardent Partners AP benchmark reports, Levvel Research AP surveys,
+Deloitte/IDC automation cost studies, published IDP/OCR vendor pricing
+(Rossum, Nanonets, AWS Textract).
+Ground-truth figures: cost per invoice handled manually, straight-through-
+processing rate, fully loaded AP clerk salary, OCR/IDP per-document pricing.
+
+Each sector ships as a static benchmark pack: a small JSON file of 5-8
+sourced figures, each tagged with value, source, date, geography. No live
+search or API calls at runtime. Sector selection is the first interview
+question (single select), keeping the interview grounded in real data.
+
+5. STRUCTURED ASSESSMENT STATE
+
+Single source-of-truth Pydantic model, shared by every module (see
+ARCHITECTURE.txt section 3.8). Key fields:
+
+sector: "customer_support" | "document_processing"
+problem: string
+process: string
+monthly_volume: number
+avg_handling_time_minutes (support) / avg_processing_time (docs)
+current_headcount: number
+worker_role: string
+fully_loaded_annual_cost: number
+fraction_time_on_process: number
+required_accuracy: number
+current_tools: string[]
+existing_data: string
+compliance_constraints: string[]
+process_stages: [
+  { stage: string, required: bool, buy_or_build: "buy"|"build",
+    vendor_or_approach: string|null }
+]
+ai_solution: object (LLM-proposed, see section 7)
+benchmark_choice: per benchmark-covered field, records accept/override
+risk fields: failure_probability, failure_impact, compliance_exposure,
+  reliability_gap
+
+Every field carries one of five provenance tags (section 6).
+
+6. DATA PROVENANCE
+
+Five-value tag set, preserved end-to-end from interview through to the
+final report. No number appears without a traceable origin.
+
+- user_provided: stated directly by the user in the interview
+- sourced: pulled from the sector benchmark pack
+- estimated: LLM-generated estimate, always a range
+- assumed: a default applied because nothing else was available, always
+  flagged as an assumption in review/report
+- derived: calculated from other fields (arithmetic on known inputs, not
+  a guess)
+
+Never silently substitute a benchmark value. If the user hasn't provided
+a value the benchmark pack covers, surface it explicitly:
+"We don't have your actual [X]. Industry benchmark is [value] ([source]).
+Use this, or provide your own?" Provenance becomes sourced if the user
+accepts, user_provided if they override.
+
+7. AI SOLUTION & ARCHITECTURE ESTIMATOR
+
+The estimator does not freely invent an architecture. It first decomposes the
+assessed workflow into required capabilities, then matches those capabilities
+against a curated Solution Registry containing established solution patterns
+and implementation options (e.g. custom code, n8n, Make, Zapier, managed AI
+services, LLM/RAG, Cartesia, etc.).
+
+7.1 Division of responsibility
+- LLM proposes and explains: decomposes the workflow into capabilities,
+  proposes candidate approaches from the available patterns, and explains
+  the fit.
+- Solution Registry constrains the solution space: a maintained reference
+  solution/pattern can be used as a baseline for comparison.
+- Deterministic logic filters, ranks, and calculates: filters and ranks
+  candidates based on assessed requirements, scale, complexity, integrations,
+  and constraints; computes effort/cost from predefined bands.
+
+7.2 Estimator outputs
+- recommended solution pattern / architecture
+- candidate implementation options
+- task-level and overall automation-rate range
+- relevant performance/accuracy range
+- integration-complexity band
+- engineering-effort band
+- human-in-the-loop requirements
+- technical risks and mitigations
+- key technical uncertainties
+- confidence for each estimate
+
+7.3 Ranges and bands, never false precision
+LLM estimates stay ranges/bands, never single numbers — always output and
+displayed as a range plus a confidence label (e.g. "60–75%, Medium
+confidence"). Never present an LLM-generated estimate as a precise value.
+
+7.4 Engineering effort bands
+Engineering effort uses predefined bands, not fake precision:
+Small / Medium / Large. Each band maps to a predefined hours-and-cost range
+in code (e.g. Small = 20-40hrs, Medium = 80-160hrs, Large = 200+ hrs —
+exact numbers [TBD]). The LLM selects the appropriate band; deterministic
+code provides the corresponding effort and cost range.
+
+7.5 Core principle
+The LLM proposes and explains; the Solution Registry constrains the
+solution space; deterministic logic filters, ranks, and calculates.
+
+8. DETERMINISTIC ECONOMIC ENGINE
+
+All calculations are pure Python functions in calc/. The LLM never outputs
+a number that enters these formulas.
+
+8.1 Primary labor baseline (authoritative)
+Attributable Labor Cost = Number of Workers x Fully Loaded Annual Cost x
+Fraction of Time Spent on Process
+(or equivalently volume x handling time x hourly rate)
+
+8.2 Current Annual Cost
+= Attributable Labor Cost + Existing Tooling/Infrastructure +
+  Error/Rework Cost + Other Direct Operating Costs
+
+8.3 AI Annual Operating Cost
+= Residual Labor + AI/API Inference + Infrastructure + Human Review +
+  Monitoring + Maintenance + Other Recurring Costs
+
+8.4 Staged implementation costing (buy vs. build per stage)
+Stages: Data collection/labeling, Model selection/prompting/fine-tuning,
+Integration, Testing/QA, Deployment, Monitoring setup, Ongoing maintenance.
+Each stage is required (yes/no) and buy vs. build. Buy = vendor/subscription/
+API cost; build = engineering time x role x loaded cost. Deployment,
+monitoring, and maintenance are explicit ongoing-cost line items.
+
+8.5 First-Year / Payback
+First-Year AI Cost = AI Implementation Cost + AI Annual Operating Cost
+Expected Annual Benefit = Current Annual Cost - AI Annual Operating Cost
+First-Year Net Benefit = Expected Annual Benefit - AI Implementation Cost
+Payback Period = Implementation Cost / Monthly Net Benefit
+
+Do not assume reduced workload automatically means reduced headcount.
+
+8.6 Benchmarks are a cross-check, never an additive cost
+Sector cost-per-ticket / cost-per-invoice figures sanity-check the
+calculated baseline ("your calculated cost per ticket is $X, industry
+benchmark is $Y — within range / notably different"). Never added on top
+of the calculated baseline, to prevent double-counting the same labor.
+
+9. SCORING SYSTEM
+
+All scores are calculated in deterministic code. The LLM never outputs a
+score directly — it only writes plain-language interpretation.
+
+Scores are analytical indicators, not a decision mechanism. They EXPLAIN
+the assessment; they do not compute a verdict via a fixed formula.
+
+9.1 Economic Score (0-100)
+Derived from payback period and benefit-to-cost ratio, from the labor
+baseline (not benchmark figures). Normalization curve: [TBD].
+
+9.2 Feasibility Score (0-100)
+Derived from data readiness (user-reported), automation-rate achievability
+(LLM range), integration complexity (LLM range). Sub-factor weights: [TBD].
+
+9.3 Risk Score (0-100, higher = safer)
+Risk is probability x consequence, tracked as separate inputs:
+- failure_probability: likelihood of a wrong/bad output (LLM range)
+- failure_impact: consequence severity if it fails (user-reported)
+- compliance_exposure: user-reported constraints, a modifier/flag (a hard
+  compliance blocker surfaces as an explicit flag even if the numeric
+  score looks fine)
+- reliability_gap: required_accuracy minus expected achievable accuracy
+Combination formula: [TBD].
+
+9.4 Composite Readiness Score
+Still computed, still shown, explicitly labeled a summary indicator, not
+the decision mechanism. Weighting: [TBD].
+
+9.5 Decision Drivers (replaces any recommendation/verdict)
+The system does NOT output a category. Instead it outputs a ranked list of
+the facts that matter most to this specific decision, plus an explicit
+uncertainty callout.
+
+Primary decision drivers (example shape):
+1. Labor represents 72% of current process cost.
+2. Expected automation is only 55-70%.
+3. Integration is Medium complexity.
+4. Payback is estimated at 11-15 months.
+5. Human review remains necessary for ~20%.
+
+The biggest uncertainty is [the field whose range is widest relative to
+its impact on the Economic Score].
+
+Generation logic:
+- Deterministic code ranks candidate drivers by how much they move the
+  Economic/Feasibility/Risk scores (sensitivity-weighted, not "list every
+  field") — ranking is calculation, not an LLM judgment call. Exact
+  ranking formula ("decision impact" per candidate fact): [TBD].
+- LLM writes plain-language phrasing of each driver from the ranked,
+  code-selected facts — it does not choose which facts matter.
+- The uncertainty callout is the single field with the widest range-to-
+  impact ratio among LLM-estimated fields — deterministic selection, LLM
+  only phrases it. Selection logic confirmation: [TBD].
+
+9.5.1 Scores become supporting context, not the headline
+Economic/Feasibility/Risk/Composite scores still render on the Analysis
+screen, but the report leads with Decision Drivers, not scores. Scores
+answer "how did you get these numbers"; Decision Drivers answer "what
+actually matters here."
+
+9.5.2 What the system explicitly does NOT do
+No recommendation label, no implicit lean framed as neutral fact ("this is
+probably a PILOT situation" is exactly the sentence to avoid). The report
+can still surface the alternatives comparison, since "what else could
+work" is itself a useful fact, not a hidden nudge.
+
+9.6 LLM estimates stay ranges, never single numbers
+Automation rate, accuracy, integration complexity, failure probability —
+always a range plus a confidence label. Never a bare number presented as
+precise.
+
+9.7 Overall Assessment Confidence
+A top-level confidence rating for the whole assessment (e.g. "Confidence:
+Medium"). Driven by how many fields are user_provided/sourced vs.
+estimated/assumed, and how wide the LLM ranges are. Exact calculation:
+[TBD].
+
+10. AI INTERVIEWER
+
+Not a form. A short, adaptive, natural-sounding conversation that fills
+the structured state with the minimum number of decision-relevant facts,
+prioritized by decision-relevance, while feeling like it's actually
+listening.
+
+10.0 Four-state machine
+
+The interviewer is a stateless turn handler (no server-side session
+memory; the client ships the AssessmentState back each turn). It moves
+through exactly four states:
+
+    INTERVIEWING  -> need more information (ask a NEW field)
+    CLARIFYING    -> existing answer is ambiguous/insufficient (re-ask/deepen)
+    READY         -> minimum sufficient state reached (stop)
+    UNCERTAIN     -> cannot obtain reliable info after reasonable attempts
+
+Deterministic logic controls which information is required, which need to
+pursue next, and when the interview can terminate. The LLM only interprets
+the latest user response and phrases the question naturally — it never
+decides what to ask or when to stop.
+
+10.1 State-driven, not history-driven
+The next step is generated from the current structured state + the most
+recent user message only, not by re-reading the full transcript. This
+keeps latency/cost down and avoids drift.
+
+10.2 Unresolved needs
+A need may be any of:
+- missing: the field has no value yet
+- ambiguous: the answer is vague or did not answer the question
+- low_confidence: the answer is rough/unreliable
+- contradiction: the answer conflicts with an existing value
+- drill_deeper: directionally useful but needs more depth (e.g. a very
+  wide range)
+
+The extraction step flags each extracted value with these quality signals;
+the deterministic need-selector turns them into a ranked set of needs.
+
+10.3 Need selection (deterministic)
+Each turn, the engine scores every unresolved need as:
+  score = decision_priority(field) + severity_bonus(need_type) + required_bonus
+and pursues the single highest. Severity ordering (highest bonus first):
+contradiction > ambiguous > low_confidence > drill_deeper > missing.
+Relevance is enforced structurally: fields marked analysis_relevant=False
+are never chased, and fields satisfiable by the sector benchmark pack
+(benchmark_substitutable) are never asked for.
+
+10.4 Realism techniques
+- Never re-ask a field the user already stated, even implicitly
+- Allow one field to be filled from a single answer when the user
+  volunteers multiple facts ("we get about 10k tickets a month, handled by
+  15 agents" fills both monthly_volume and current_headcount)
+- Acknowledge before asking ("Got it, so about 10k tickets a month —")
+- Vary phrasing — don't reuse the structured-state field name as template
+- For a CLARIFYING need, ask ONE targeted follow-up referencing the existing
+  value, not the same broad question
+- One question at a time, never two bundled in one message
+
+10.5 Over-asking guard
+Fields that don't feed the downstream analysis (analysis_relevant=False) or
+that have a reasonable benchmark default (benchmark_substitutable=True) are
+never spent a question on. This enforces: never ask for information that is
+irrelevant to the eventual analysis simply because it exists in the schema.
+
+10.6 Termination
+- READY: minimum sufficient state reached — every required, analysis-relevant,
+  non-benchmark field is resolved.
+- UNCERTAIN: a field could not be resolved after MAX_ATTEMPTS (default 3)
+  attempts, or the global question cap (default 12) is reached. The
+  interviewer reports explicitly what remains uncertain; this uncertainty
+  carries through to Overall Assessment Confidence rather than silently
+  proceeding.
+
+10.7 Model output contract
+Every interviewer LLM call returns structured JSON (not free text parsed
+after the fact): updated fields with values + tags + quality flags
+(ambiguous/low_confidence/contradiction/needs_detail), and the next question
+text. This keeps the UI simple and prevents the LLM from silently doing
+calculation or inventing numbers inside a chat bubble.
+
+11. ALTERNATIVES
+
+LLM generates 2-3 qualitative alternatives (process redesign, rules-based
+system, smaller ML model, human+AI hybrid) and compares them against the
+primary proposal in prose. No separate full economic model per alternative
+for the MVP.
+
+12. SENSITIVITY ANALYSIS
+
+Threshold sweep on 2-3 key variables, in the shape "score/assessment would
+change to X if variable exceeds Y." Example:
+Decision changes if: automation rate > 72%; implementation cost < 22L;
+required human review < 20%.
+
+13. FINAL REPORT
+
+Leads with Decision Drivers, then supporting scores and full breakdown.
+Suggested structure:
+1. Executive Summary
+2. Problem Definition
+3. Current Process
+4. Current Cost
+5. Proposed AI Solution
+6. Alternative Solutions
+7. Implementation Requirements
+8. AI Operating Cost
+9. Expected Benefits
+10. Risks and Reliability
+11. Assumptions
+12. External Sources
+13. Sensitivity Analysis
+14. What to Validate Next
+
+Every figure is visibly tagged with its provenance (User-provided / Sourced
+/ Estimated / Assumed / Derived). This is the core trust mechanism — not
+optional styling. Every number in the output traces back to a calc module
+or a benchmark pack entry, never to LLM free text.
+
+14. MVP USER EXPERIENCE (6 screens)
+
+Intended screen flow; a client/frontend is NOT built yet — it will be
+decided only if/when it becomes necessary. Endpoints are exposed per the
+architecture instead.
+
+SCREEN 1 — START: "What problem are you considering using AI to solve?"
+  Large text input + sector select + Start Assessment.
+SCREEN 2 — INTERVIEW: conversational, adaptive questions.
+SCREEN 3 — ASSESSMENT REVIEW: structured info, editable; benchmark-vs-user
+  choices resolved here.
+SCREEN 4 — ANALYSIS: scores + cost breakdown; supporting context, not the
+  headline.
+SCREEN 5 — DECISION DRIVERS: ranked driver list + uncertainty callout.
+SCREEN 6 — REPORT: full cited assessment; print/save-as-PDF at most, no
+  generated PDF file.
+
+15. RESPONSIBILITY SPLIT
+
+LLM (language only):
+- understand business problem, extract structured info
+- identify missing info, select next question
+- propose candidate AI solutions (as ranges/bands)
+- summarize evidence, explain assessment
+- generate report prose and driver phrasing
+
+Deterministic code (all numbers):
+- validate state, calculate labor/AI/implementation costs, savings, payback
+- run sensitivity scenarios
+- compute Economic/Feasibility/Risk/Composite scores
+- rank Decision Drivers, select uncertainty callout
+
+Research layer: find external values, preserve citations, distinguish
+sourced data from assumptions.
+
+16. TECH STACK (final)
+
+Backend: FastAPI (Python 3.13), runs in .venv/ — owns all LLM calls and all
+deterministic calculations.
+Validation/schema: Pydantic, single source-of-truth model.
+LLM: OpenAI API, server-side only from FastAPI endpoints.
+State: passed between client and server each request; nothing persists
+server-side between requests.
+Frontend/client: deferred — not built unless needed.
+No database. No auth. See ARCHITECTURE.txt for module breakdown.
+
+17. SUCCESS CRITERIA
+
+The MVP is successful if a user can:
+1. describe a business problem
+2. complete a short adaptive interview
+3. see the system's structured understanding
+4. correct extracted information
+5. see externally sourced values with citations
+6. see transparent baseline-vs-AI cost calculations
+7. see uncertainty and assumptions
+8. see alternative solutions
+9. read a ranked list of Decision Drivers and the biggest uncertainty
+10. understand what information would change the assessment
+11. generate a coherent final report
+
+18. WHAT NOT TO BUILD (MVP)
+
+multi-agent swarm, voice/video interviewer, comprehensive financial
+database, every industry, full enterprise auth, complex user management,
+custom model training, custom RAG infrastructure, perfect workforce-
+displacement model, fully autonomous financial decision making, complex
+dashboards, large-scale analytics, live market feeds, multi-provider model
+comparison, post-deployment feedback loop.
+
+=================================================
+REVISION HISTORY (context only — decisions below are final)
+=================================================
+
+v1 (MVP_Specification.txt): Original. BUILD/PILOT/DON'T BUILD single label,
+Python/FastAPI + LangGraph + SQLite, live external research, Pydantic state.
+
+v2: Locked the two sectors with static ground-truth packs; replaced the
+single category label with a scored output; added staged buy-vs-build
+costing; detailed state-driven interviewer spec.
+
+v3: Scores become indicators, not deciders; Risk split into probability x
+impact; 5-tag provenance (added "derived"); benchmark renamed to "cross-
+check" with anti-double-counting rule; engineering effort as bands;
+benchmark substitution always explicit.
+
+v4 (final): Removed the recommendation category entirely — replaced with
+ranked Decision Drivers + explicit uncertainty callout. Screen 5 renamed
+"Decision Drivers". Decision driver ranking formula and uncertainty
+selection logic added as [TBD] open items.
+
+=================================================
+OPEN ITEMS ([TBD] — define before building the calc layer)
+=================================================
+
+- 9.1 Economic Score normalization curve
+- 9.2 Feasibility Score sub-factor weights
+- 9.3 Risk Score combination formula
+- 9.4 Composite score weighting
+- 9.5 Decision driver ranking formula ("decision impact" per candidate fact)
+- 9.5 uncertainty-callout selection logic (range-width-to-impact ratio vs.
+  additional factor)
+- 9.7 Overall Assessment Confidence calculation
+- 7 engineering-effort band hour/cost ranges
+- 4 sector benchmark pack actual figures (both sectors) — pull from real
+  sources before hardcoding
+
+The most important open item is the Decision driver ranking formula — it is
+the intellectual core of the product and must be defined before the calc
+layer is built.
