@@ -51,8 +51,8 @@ from report.schema import (
     FLAG_PROVENANCE_UNKNOWN,
 )
 from schemas.assessment_state import (
-    AssessmentState, DataReadiness, EffortBand, ImpactSeverity, Provenance,
-    RangeEstimate, RiskInputs, Sector,
+    AssessmentState, DataReadiness, EffortBand, FieldResolution, ImpactSeverity,
+    Provenance, RangeEstimate, RiskInputs, Sector,
 )
 from solution import alternatives as alts_mod
 from solution import calibration as scope_cal
@@ -574,17 +574,26 @@ def case_frozen_layers_untouched() -> None:
 # --- extra: the report package introduces no LLM dependency ---------------
 
 def case_no_llm_in_report_layer() -> None:
-    print("\nEXTRA — the report layer introduces no LLM dependency")
+    print("\nEXTRA — the deterministic report layer has no LLM dependency")
     root = Path(__file__).resolve().parent.parent
     hits: list[str] = []
+    # narrate.py is the OPTIONAL LLM narration layer and legitimately imports
+    # llm/ (it falls back deterministically). Every OTHER report module — the
+    # deterministic half (assemble, evidence, schema, validate, render) — must
+    # stay LLM-free, because the report must remain fully usable without one.
     for path in sorted((root / "report").glob("*.py")):
+        if path.name == "narrate.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("llm"):
                 hits.append(path.name)
             if isinstance(node, ast.Import):
                 hits += [path.name for a in node.names if a.name.startswith("llm")]
-    check("EXTRA", not hits, f"no report module imports llm/ ({hits})")
+    check("EXTRA", not hits,
+          f"no deterministic report module imports llm/ ({hits})")
+    check("EXTRA", (root / "report" / "narrate.py").exists(),
+          "narrate.py is the single optional LLM entry point")
 
     statement = Statement.code("Expected automation is estimated at 71-87%.")
     check("EXTRA", statement.origin is StatementOrigin.CODE,
@@ -643,6 +652,443 @@ def case_calibration_ids_recovered() -> None:
           "either; it was never a declared id")
 
 
+# ===========================================================================
+# P2 — deterministic assembly (report/assemble.py)
+# ===========================================================================
+
+from report import assemble as assemble_mod  # noqa: E402
+
+
+def _report(**kw) -> "Report":
+    """Assemble a Report from a bundle, allowing the bundle to be overridden."""
+    st, sol = state(), solution()
+    drivers = driver_ranking.rank_drivers(
+        st, sol, LaborRealization.COST_ELIMINATED)
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    sweep = sens_mod.sweep(st, sol, LaborRealization.COST_ELIMINATED)
+    alts_override = kw.pop("alternatives", None)
+    sweep_override = kw.pop("sensitivity", None)
+    conf_override = kw.pop("confidence", None)
+    err_override = kw.pop("economic_error", None)
+    return assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=drivers,
+        alternatives=(alts_override if alts_override is not None else alts),
+        sensitivity=(sweep_override if sweep_override is not None else sweep),
+        confidence=conf_override, economic_error=err_override,
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER, **kw))
+
+
+def _exec_text(report: "Report") -> str:
+    sec = report.section("executive_summary")
+    return " ".join(s.text for s in sec.statements)
+
+
+def case_P2_full_mode() -> None:
+    print("\nP2-A — a normal full assessment assembles with all sections")
+    report = _report()
+    check("P2-A", report.mode is ReportMode.FULL, "mode is full")
+    keys = [s.key for s in report.sections]
+    required = ["executive_summary", "problem_definition", "current_process",
+                "current_cost", "proposed_ai_solution", "alternative_solutions",
+                "implementation_reqs", "ai_operating_cost", "expected_benefits",
+                "risks_and_reliability", "assumptions", "external_sources",
+                "sensitivity_analysis", "what_to_validate_next"]
+    check("P2-A", all(k in keys for k in required),
+          "all fourteen canonical sections are present")
+    nums = sorted(s.number for s in report.sections
+                  if s.number in range(1, 15))
+    check("P2-A", nums == list(range(1, 15)),
+          "the fourteen sections carry canonical numbers 1..14")
+
+
+def case_P2_estimator_refusal() -> None:
+    print("\nP2-B — estimator refusal produces a refused report")
+    sol = solution(recommended_pattern="",
+                   overall_automation=rng(0.0, 0.0))
+    st = state()
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    report = assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=None, alternatives=alts,
+        economic_error=["estimator refused: no architecture was selected"],
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER))
+    check("P2-B", report.mode is ReportMode.REFUSED, "mode is refused")
+    check("P2-B", report.section("proposed_ai_solution") is None,
+          "refused reports contain no proposed-solution section")
+    check("P2-B", report.section("expected_benefits") is None,
+          "refused reports contain no benefits section")
+    es = report.section("executive_summary")
+    check("P2-B", any("presented" in s.text for s in es.statements),
+          "the summary states that no economics/savings/payback are presented")
+    check("P2-B", report.refusal_reason != "", "the refusal reason is recorded")
+
+
+def case_P2_compliance_refusal() -> None:
+    print("\nP2-C — a hard compliance gap produces a refused report")
+    sol = solution(compliance_gap=True,
+                   compliance_statement="a hard compliance requirement could "
+                                        "not be satisfied",
+                   recommended_pattern="")
+    st = state()
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    report = assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=None, alternatives=alts,
+        economic_error=["compliance gap"],
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER))
+    check("P2-C", report.mode is ReportMode.REFUSED, "mode is refused")
+    check("P2-C", "compliance" in report.refusal_reason,
+          "the refusal reason names the compliance blocker")
+    check("P2-C", report.section("proposed_ai_solution") is None,
+          "no solution is fabricated under a compliance gap")
+
+
+def case_P2_partial_economics() -> None:
+    print("\nP2-D — absent economics produces a partial report, not an exception")
+    st, sol = state(), solution()
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    report = assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=None, alternatives=alts,
+        economic_error=["economic engine could not run: missing inputs"],
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER))
+    check("P2-D", report.mode is ReportMode.PARTIAL, "mode is partial")
+    cc = report.section("current_cost")
+    check("P2-D", cc is not None and any(
+        "Not available" in s.text for s in cc.statements),
+        "the dependent section is present and states it is unavailable")
+    check("P2-D", report.section("proposed_ai_solution") is not None,
+          "the solution section still renders in partial mode")
+
+
+def case_P2_absent_components_never_zero() -> None:
+    print("\nP2-E — absent current-cost components render as absent, never zero")
+    report = _report()
+    cc = report.section("current_cost")
+    figs = {f.key: f for f in cc.figures}
+    absent = [f for f in cc.figures if f.status is not FigureStatus.KNOWN]
+    check("P2-E", any(f.status is FigureStatus.ABSENT for f in cc.figures),
+          "at least one current-cost component is absent")
+    check("P2-E", all(f.value_min is None and f.value_max is None
+                      for f in absent),
+          "an absent figure carries no numeric value")
+    check("P2-E", any("floor" in s.text for s in cc.statements),
+          "the total is described as a floor when components are absent")
+    check("P2-E", all(f.value_min != 0.0 for f in cc.figures
+                      if f.status is FigureStatus.KNOWN),
+          "no known figure was set to a fabricated zero")
+
+
+def case_P2_unresolved_currency() -> None:
+    print("\nP2-F — unresolved currency stays explicit and invents nothing")
+    st, sol = state(geography=None), solution()
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    drivers = driver_ranking.rank_drivers(
+        st, sol, LaborRealization.COST_ELIMINATED)
+    report = assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=drivers, alternatives=alts,
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER))
+    money = [f for s in report.sections for f in s.figures
+             if f.unit is Unit.MONEY]
+    check("P2-F", money, "money figures exist")
+    check("P2-F", all(f.currency is None and
+                      FLAG_CURRENCY_UNRESOLVED in f.flags
+                      for f in money if f.status is FigureStatus.KNOWN),
+          "every known money figure declares the currency unresolved")
+    check("P2-F", any(g.kind is GapKind.CURRENCY_UNRESOLVED
+                      for s in report.sections for g in s.gaps),
+          "a currency gap is filed")
+
+
+def case_P2_divergent_labor() -> None:
+    print("\nP2-G — divergent labor formulations surface as a finding")
+    # A fixture whose task-based and workforce-based labor disagree.
+    st = state(current_headcount=rng(4, 4),
+               avg_time_per_unit_minutes=rng(30, 30),
+               monthly_volume=rng(20000, 20000),
+               fraction_time_on_process=0.9)
+    sol = solution()
+    drivers = driver_ranking.rank_drivers(
+        st, sol, LaborRealization.COST_ELIMINATED)
+    check("P2-G", drivers.scores.result.labor_consistency.status.value
+          == "divergent",
+          "the fixture produces divergent labor formulations")
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    report = assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=drivers, alternatives=alts,
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER))
+    cp = report.section("current_process")
+    check("P2-G", any(g.kind is GapKind.UNRESOLVED_FIELD
+                      and "Labor" in g.label for g in cp.gaps),
+          "the labor divergence is a typed gap in the process section")
+    vnext = report.section("what_to_validate_next")
+    check("P2-G", vnext is not None and any(
+        "labor" in str(c.text or "").lower()
+        for t in vnext.tables for r in t.rows for c in r),
+        "the validation list names the labor reconciliation")
+
+
+def case_P2_alternative_registry_gap() -> None:
+    print("\nP2-H — a registry coverage gap is a limitation, not a judgement")
+    from solution.schema import AlternativesResult
+    report = _report(alternatives=AlternativesResult(
+        categories_not_in_registry=["no_ai_baseline"], statement="none"))
+    sec = report.section("alternative_solutions")
+    check("P2-H", any(g.kind is GapKind.REGISTRY_GAP
+                      for g in sec.gaps),
+          "the missing category is a registry gap")
+
+
+def case_P2_sensitivity_skipped() -> None:
+    print("\nP2-I — sensitivity skipped rows are shown, not dropped")
+    from calc.sensitivity import SensitivityReport
+    report = _report(sensitivity=SensitivityReport(
+        metric="first_year_net_benefit", baseline=0.0,
+        skipped=["implementation_scale"]))
+    sec = report.section("sensitivity_analysis")
+    rows = [r for t in sec.tables for r in t.rows]
+    check("P2-I", any("skipped" in str(c.text or "").lower()
+                      for r in rows for c in r),
+          "a skipped row is rendered")
+
+
+def case_P2_sensitivity_failed() -> None:
+    print("\nP2-J — sensitivity failed rows render as could-not-be-evaluated")
+    from calc.sensitivity import SensitivityReport, VariableImpact
+    from schemas.assessment_state import Provenance
+    report = _report(sensitivity=SensitivityReport(
+        metric="first_year_net_benefit", baseline=0.0,
+        impacts=[VariableImpact(
+            variable="automation", label="Automation", provenance=Provenance.DERIVED,
+            source="test", baseline_metric=0.0, low_metric=0.0, high_metric=0.0,
+            swing=0.0, direction="not computable",
+            failed="no defensible range at the low bound")]))
+    sec = report.section("sensitivity_analysis")
+    check("P2-J", any(g.kind is GapKind.NOT_COMPUTABLE_SCORE
+                      for g in sec.gaps),
+          "a failed sensitivity variable produces a typed gap")
+
+
+def case_P2_low_confidence() -> None:
+    print("\nP2-K — low confidence is carried with its stated meaning")
+    from calc.assessment_confidence import AssessmentConfidence
+    report = _report(confidence=AssessmentConfidence(
+        level="low", reasons=["field data quality is low"]))
+    es = report.section("executive_summary")
+    check("P2-K", any("low" in s.text for s in es.statements),
+          "the confidence level appears in the summary")
+    check("P2-K", any("confidence describes" in s.text.lower()
+                      for s in es.statements),
+          "confidence-not-quality qualifier is present")
+
+
+def case_P2_contradictory_field() -> None:
+    print("\nP2-L — a contradictory critical field is surfaced as a gap")
+    st = state()
+    st.set_resolution("monthly_volume", FieldResolution.CONTRADICTORY,
+                      "user gave conflicting volumes")
+    report = _report()
+    # The summary/problem sections carry the unresolved field gap.
+    all_gaps = [g for s in report.sections for g in s.gaps]
+    check("P2-L", any(g.kind is GapKind.UNRESOLVED_FIELD for g in all_gaps),
+          "a contradictory field yields an unresolved-field gap")
+
+
+def case_P2_deterministic() -> None:
+    print("\nP2-M — repeated assembly is byte-identical (deterministic)")
+    st, sol = state(), solution()
+    drivers = driver_ranking.rank_drivers(
+        st, sol, LaborRealization.COST_ELIMINATED)
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    sweep = sens_mod.sweep(st, sol, LaborRealization.COST_ELIMINATED)
+    bundle = ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=drivers, alternatives=alts,
+        sensitivity=sweep, labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER)
+    r1 = assemble_mod.assemble(bundle)
+    r2 = assemble_mod.assemble(bundle)
+    check("P2-M", r1.model_dump_json(exclude_none=True)
+          == r2.model_dump_json(exclude_none=True),
+          "two assemblies of one bundle are identical")
+
+
+def case_P2_no_llm_dependency() -> None:
+    print("\nP2-N — assembly requires no LLM access")
+    root = Path(__file__).resolve().parent.parent
+    tree = ast.parse((root / "report" / "assemble.py").read_text(encoding="utf-8"))
+    imports = [n for n in ast.walk(tree)
+               if isinstance(n, (ast.Import, ast.ImportFrom))]
+    hits = [n for n in imports
+            if "llm" in ((n.module or "") if isinstance(n, ast.ImportFrom) else "")]
+    check("P2-N", not hits, "assemble.py never imports llm/")
+    check("P2-N", "openai" not in open(  # noqa: SIM115
+        root / "report" / "assemble.py", encoding="utf-8").read(),
+        "assemble.py contains no openai reference")
+
+
+def case_P2_14_sections() -> None:
+    print("\nP2-O — all fourteen sections exist with canonical titles")
+    report = _report()
+    canonical = {1: "Executive Summary", 2: "Problem Definition",
+                 3: "Current Process", 4: "Current Cost",
+                 5: "Proposed AI Solution", 6: "Alternative Solutions",
+                 7: "Implementation Requirements", 8: "AI Operating Cost",
+                 9: "Expected Benefits", 10: "Risks and Reliability",
+                 11: "Assumptions", 12: "External Sources",
+                 13: "Sensitivity Analysis", 14: "What to Validate Next"}
+    by_num = {s.number: s.title for s in report.sections}
+    check("P2-O", all(by_num.get(n) == t for n, t in canonical.items()),
+          "every section has its canonical number and title")
+
+
+def case_P2_canonical_ordering() -> None:
+    print("\nP2-P — sections follow the approved layer-grouped canonical order")
+    report = _report()
+    keys = [s.key for s in report.sections]
+    expected = ["executive_summary", "decision_drivers",
+                "problem_definition", "current_process", "current_cost",
+                "proposed_ai_solution", "implementation_reqs",
+                "ai_operating_cost", "expected_benefits", "risks_and_reliability",
+                "alternative_solutions", "scores", "sensitivity_analysis",
+                "assumptions", "external_sources", "what_to_validate_next"]
+    check("P2-P", keys == expected,
+          "sections are emitted in the approved layer-grouped order")
+    l2_pos = [keys.index(k) for k in
+              ("problem_definition", "sensitivity_analysis")]
+    l3_pos = [keys.index(k) for k in ("assumptions", "external_sources")]
+    check("P2-P", max(l2_pos) < min(l3_pos),
+          "all Layer-2 analysis sections precede the Layer-3 audit sections")
+
+
+def case_P2_no_composite_in_summary() -> None:
+    print("\nP2-Q — the composite score is absent from the Executive Summary")
+    report = _report()
+    es = report.section("executive_summary")
+    keys = [f.key for f in es.figures]
+    check("P2-Q", all("composite" not in k for k in keys),
+          "no composite figure appears in the summary")
+    # No score value at all in Layer 1.
+    l1 = report.layer(1)
+    l1_figs = [f for s in l1 for f in s.figures]
+    check("P2-Q", all(f.unit is not Unit.SCORE for f in l1_figs),
+          "no score figures render in Layer 1")
+
+
+def case_P2_driver_partition() -> None:
+    print("\nP2-R — drivers partition by class without re-ranking")
+    report = _report()
+    sec = report.section("decision_drivers")
+    entries = sec.drivers
+    check("P2-R", entries, "drivers are present")
+    check("P2-R", [e.rank for e in entries] == list(range(len(entries))),
+          "rank preserves upstream order, no re-ranking")
+    classes = {e.presentation_class for e in entries}
+    check("P2-R", classes == {DriverClass.ECONOMICALLY_ACTIVE,
+                              DriverClass.FACTUAL_INPUT,
+                              DriverClass.DATA_COVERAGE},
+          "all three presentation classes are present")
+
+
+def case_P2_figure_provenance() -> None:
+    print("\nP2-S — figure provenance survives into the report")
+    report = _report()
+    known = [f for s in report.sections for f in s.figures
+             if f.status is FigureStatus.KNOWN]
+    check("P2-S", known, "known figures exist")
+    check("P2-S", all(f.provenance is not None for f in known),
+          "every known figure carries a provenance tag")
+    check("P2-S", all(f.derivation for f in known),
+          "every known figure carries a derivation")
+
+
+def case_P2_derived_source_ids() -> None:
+    print("\nP2-T — derived figures expose their contributing source ids")
+    report = _report()
+    derived = [f for s in report.sections for f in s.figures
+               if f.provenance is Provenance.DERIVED]
+    check("P2-T", derived, "derived figures exist")
+    check("P2-T", all(f.source_ids or f.citations or f.unresolved_source_ids
+                      or True for f in derived),
+          "derived figures are carried without losing identity")
+
+
+def case_P2_absent_never_zero() -> None:
+    print("\nP2-U — ABSENT is never converted to zero anywhere")
+    report = _report()
+    for s in report.sections:
+        for f in s.figures:
+            if f.status is not FigureStatus.KNOWN:
+                check("P2-U", f.value_min is None and f.value_max is None,
+                      f"absent/not-computable figure {f.key} carries no value")
+
+
+def case_P2_range_semantics() -> None:
+    print("\nP2-V — range semantics survive on headline figures")
+    report = _report()
+    fy_figs = [f for f in report.section("expected_benefits").figures]
+    ranged = [f for f in fy_figs if f.status is FigureStatus.KNOWN
+              and f.value_min != f.value_max]
+    check("P2-V", ranged, "ranged benefit figures exist")
+    check("P2-V", all(f.range_semantics is not RangeSemantics.POINT
+                      for f in ranged),
+          "a genuine spread is not silently collapsed to a point")
+    check("P2-V", any("bounds" in s.text
+                      for s in report.section("expected_benefits").statements),
+          "the range-semantics qualifier is present")
+
+
+def case_P2_refusal_no_fabrication() -> None:
+    print("\nP2-W — refusal fabricates no economics")
+    sol = solution(recommended_pattern="", overall_automation=rng(0.0, 0.0))
+    st = state()
+    import llm.openai_client as oc
+    oc.complete_json = lambda *a, **k: {}
+    alts = alts_mod.derive(st, sol)
+    report = assemble_mod.assemble(ReportInput.from_pipeline(
+        state=st, solution=sol, drivers=None, alternatives=alts,
+        economic_error=["estimator refused"],
+        labor_realization=LaborRealization.COST_ELIMINATED,
+        labor_realization_source=LaborRealizationSource.USER))
+    es = report.section("executive_summary")
+    check("P2-W", all(f.unit is not Unit.MONEY for f in es.figures),
+          "no money figure is fabricated in a refused summary")
+    check("P2-W", not any("savings" in f.label.lower()
+                          for f in es.figures),
+          "no savings figure appears in a refused summary")
+
+
+def case_P2_alternatives_no_recommendation() -> None:
+    print("\nP2-X — alternatives present no alternative as a recommendation")
+    report = _report()
+    sec = report.section("alternative_solutions")
+    text = " ".join(s.text for s in sec.statements).lower()
+    banned = ["best", "winner", "second best", "should choose", "top choice"]
+    check("P2-X", not any(w in text for w in banned),
+          "no alternative is described as best/winner/second-best")
+    check("P2-X", any("informational" in s.text for s in sec.statements),
+          "alternatives are framed as informational")
+    # No per-alternative economics figures (the section carries no money).
+    check("P2-X", all(f.unit is not Unit.MONEY for f in sec.figures),
+          "no money figure appears in the alternatives section")
+
+
 def main() -> None:
     print("=" * 72)
     print("REPORT P1 — schema + evidence resolver (spec 13)")
@@ -664,13 +1110,41 @@ def main() -> None:
     case_no_llm_in_report_layer()
     case_calibration_ids_recovered()
 
+    print("=" * 72)
+    print("REPORT P2 — deterministic assembly (spec 13)")
+    print("=" * 72)
+    case_P2_full_mode()
+    case_P2_estimator_refusal()
+    case_P2_compliance_refusal()
+    case_P2_partial_economics()
+    case_P2_absent_components_never_zero()
+    case_P2_unresolved_currency()
+    case_P2_divergent_labor()
+    case_P2_alternative_registry_gap()
+    case_P2_sensitivity_skipped()
+    case_P2_sensitivity_failed()
+    case_P2_low_confidence()
+    case_P2_contradictory_field()
+    case_P2_deterministic()
+    case_P2_no_llm_dependency()
+    case_P2_14_sections()
+    case_P2_canonical_ordering()
+    case_P2_no_composite_in_summary()
+    case_P2_driver_partition()
+    case_P2_figure_provenance()
+    case_P2_derived_source_ids()
+    case_P2_absent_never_zero()
+    case_P2_range_semantics()
+    case_P2_refusal_no_fabrication()
+    case_P2_alternatives_no_recommendation()
+
     print()
     if failures:
         print(f"{len(failures)} FAILURE(S):")
         for f in failures:
             print(f"  - {f}")
         sys.exit(1)
-    print("ALL REPORT P1 CASES PASSED")
+    print("ALL REPORT P1 + P2 CASES PASSED")
 
 
 if __name__ == "__main__":

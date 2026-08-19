@@ -734,3 +734,992 @@ def _section_alternatives(ctx: _Ctx) -> ReportSection:
                          title="Alternative Solutions", layer=2,
                          statements=statements, figures=figures, tables=tables,
                          gaps=gaps, audit_notes=audit_notes)
+
+
+# ---------------------------------------------------------------------------
+# Decision Drivers — Layer 1, first substantive content (approved ordering).
+# A PRESENTATION PARTITION, never a re-ranking. Upstream order is preserved
+# exactly; only the grouping into economically-active / factual / data-coverage
+# changes. `DriverClass.for_driver` reads each driver's own type and impact and
+# compares nothing against anything else.
+# ---------------------------------------------------------------------------
+
+def _section_drivers(ctx: _Ctx) -> ReportSection:
+    drivers = ctx.b.drivers
+    statements: list[Statement] = [Statement.code(
+        "Which variables move the economics, in the order the ranking module "
+        "computed. This is not a second ranking — it is the same output, "
+        "grouped by what each driver is.")]
+    entries: list[DriverEntry] = []
+    gaps: list[Gap] = []
+
+    if drivers is None:
+        statements.append(Statement.code(
+            "Decision Drivers are unavailable because the economic engine could "
+            "not run on this assessment."))
+        return ReportSection(key="decision_drivers", number=0,
+                             title="Decision Drivers", layer=1,
+                             statements=statements, gaps=gaps)
+
+    for i, d in enumerate(drivers.drivers):
+        entries.append(DriverEntry(
+            key=d.key, label=d.label, statement=Statement.verbatim(
+                d.statement, f"DecisionDrivers.drivers[{d.key}].statement"),
+            driver_type=d.driver_type.value,
+            presentation_class=DriverClass.for_driver(d.driver_type.value,
+                                                       d.impact),
+            rank=i, impact=d.impact, dominant_quantity=d.dominant_quantity,
+            confidence=d.confidence,
+            uncertainty_type=d.uncertainty_type,
+            relative_width=d.relative_width, uncertainty_index=d.uncertainty_index,
+            evidence_notes=list(d.evidence_ids)))
+
+    if drivers.uncertainty_statement:
+        statements.append(Statement.verbatim(
+            drivers.uncertainty_statement,
+            "DecisionDrivers.uncertainty_statement"))
+
+    return ReportSection(key="decision_drivers", number=0,
+                         title="Decision Drivers", layer=1,
+                         statements=statements, drivers=entries, gaps=gaps)
+
+
+# ---------------------------------------------------------------------------
+# Scores — Layer 2 indicators, never a verdict. Composite may appear here but
+# never in Layer 1 (approved decision 5). A not-computable score stays
+# not-computable with its inputs named.
+# ---------------------------------------------------------------------------
+
+def _score_figure(ctx: _Ctx, score: Any) -> Figure:
+    key = f"scores.{score.key}"
+    if not score.computable:
+        fig = ctx.not_computable(key, score.label, list(score.missing_inputs))
+        flags = list(getattr(score, "flags", []) or [])
+        fig = fig.model_copy(update={"flags": flags})
+        ctx.ledger[-1] = fig
+        return fig
+    fig = ctx.number(key, score.label, float(score.value or 0.0),
+                     unit=Unit.SCORE,
+                     derivation=(f"{score.label}: {score.band}" +
+                                 (f" — {score.note}" if score.note else "")),
+                     provenance=Provenance.DERIVED, origin="calc.scoring")
+    flags = list(getattr(score, "flags", []) or [])
+    if flags:
+        fig = fig.model_copy(update={"flags": flags,
+                                     "unit_detail": "; ".join(flags)})
+        ctx.ledger[-1] = fig
+    return fig
+
+
+def _section_scores(ctx: _Ctx) -> ReportSection:
+    scores = ctx.b.scores
+    statements = [Statement.code(QUALIFIERS["confidence_not_quality"])]
+    if scores is None:
+        statements.append(Statement.code(
+            "Scores are unavailable because the scoring layer could not run."))
+        return ReportSection(key="scores", number=0, title="Scores", layer=2,
+                             statements=statements)
+    figures = [_score_figure(ctx, scores.economic),
+               _score_figure(ctx, scores.feasibility),
+               _score_figure(ctx, scores.risk),
+               _score_figure(ctx, scores.composite)]
+    statements.append(Statement.code(
+        "These are indicators, not a decision. They describe how well-grounded "
+        "and how internally consistent the analysis is; a low score and a high "
+        "score are both consistent with any business decision."))
+    return ReportSection(key="scores", number=0, title="Scores", layer=2,
+                         statements=statements, figures=figures)
+
+
+# ---------------------------------------------------------------------------
+# 1. Executive Summary — Layer 1 frame. Slot-filled, deterministic, neutral.
+# No score value, no composite. Every figure carries its provenance chip.
+# ---------------------------------------------------------------------------
+
+def _section_executive(ctx: _Ctx, mode: ReportMode, reason: str) -> ReportSection:
+    state, solution, economics = ctx.b.state, ctx.b.solution, ctx.b.economics
+    statements: list[Statement] = []
+    figures: list[Figure] = []
+
+    # Slot 1 — what was assessed.
+    statements.append(Statement.code("What this assessment covers:"))
+    statements.append(Statement.verbatim(state.problem or "the stated problem",
+                                         "AssessmentState.problem"))
+    figures.append(ctx.category(
+        "summary.sector", "Sector", state.sector.value,
+        derivation="selected at the start of the interview",
+        provenance=state.get_tag("sector") or Provenance.USER_PROVIDED,
+        origin="schemas.assessment_state"))
+
+    # Refused framing first — no fabricated solution/economics.
+    if mode is ReportMode.REFUSED:
+        statements.append(Statement.code("The assessment could not be completed."))
+        statements.append(Statement.verbatim(reason or "the assessment was refused",
+                                             "report.refusal_reason"))
+        statements.append(Statement.code(
+            "No architecture, automation level, performance, economics, savings, "
+            "payback or recommendation is presented, because the analysis that "
+            "would support one was not produced."))
+        return ReportSection(key="executive_summary", number=1,
+                             title="Executive Summary", layer=1,
+                             statements=statements, figures=figures)
+
+    # Slot 2 — what the analysis produced.
+    if solution.recommended_pattern:
+        statements.append(Statement.code(
+            "The analysis produced a proposed solution:"))
+        figures.append(ctx.category(
+            "summary.pattern", "Proposed pattern", solution.recommended_pattern,
+            derivation="deterministic registry filter and ranking",
+            provenance=Provenance.DERIVED, origin="solution.estimator"))
+        statements.append(Statement.code(QUALIFIERS["not_a_recommendation"]))
+        if solution.overall_automation is not None:
+            figures.append(ctx.from_range(
+                "summary.automation", "Overall automation range",
+                solution.overall_automation, unit=Unit.PERCENT,
+                origin="solution.estimator"))
+
+    # Slot 3 — what matters most (economically active drivers, upstream order).
+    if ctx.b.drivers is not None:
+        statements.append(Statement.code("What matters most here:"))
+        for d in ctx.b.drivers.drivers:
+            if d.impact > 0.0 and d.driver_type.value != "data_coverage":
+                statements.append(Statement.verbatim(
+                    d.statement, f"DecisionDrivers.drivers[{d.key}].statement"))
+
+    # Slot 4 — modelled economics (only in FULL/PARTIAL with economics).
+    if economics is not None:
+        statements.append(Statement.code("Modelled economics:"))
+        figures.append(ctx.from_range(
+            "summary.current_cost", "Current annual cost",
+            economics.current_annual_total, unit=Unit.MONEY,
+            origin="calc.engine"))
+        if economics.absent_components:
+            statements.append(Statement.code(QUALIFIERS["absent_is_not_zero"]))
+        if economics.ai_operating_total is not None:
+            figures.append(ctx.from_range(
+                "summary.ai_operating_cost", "AI annual operating cost",
+                economics.ai_operating_total, unit=Unit.MONEY,
+                origin="calc.engine"))
+        fy = economics.first_year
+        if fy is not None:
+            figures.append(ctx.from_range(
+                "summary.annual_savings", "Annual cost savings",
+                fy.annual_cost_savings, unit=Unit.MONEY, origin="calc.lifecycle"))
+            if fy.payback_statement:
+                statements.append(Statement.verbatim(
+                    fy.payback_statement,
+                    "EconomicResult.first_year.payback_statement"))
+        statements.append(Statement.code(QUALIFIERS["cost_savings_only"]))
+        statements.append(Statement.code(QUALIFIERS["first_year"]))
+        statements.append(Statement.code(QUALIFIERS["range_semantics"]))
+
+    # Slot 5 — labor realization policy.
+    statements.append(Statement.code("Labor realization policy:"))
+    statements.append(Statement.verbatim(
+        economics.realization_statement if economics is not None
+        else (f"{ctx.b.labor_realization.value if ctx.b.labor_realization else 'unset'}"),
+        "EconomicResult.realization_statement"))
+
+    # Slot 6 — confidence.
+    if ctx.b.confidence is not None:
+        statements.append(Statement.code(
+            f"Overall assessment confidence: {ctx.b.confidence.level}."))
+        for r in ctx.b.confidence.reasons[:3]:
+            statements.append(Statement.code(r))
+    statements.append(Statement.code(QUALIFIERS["confidence_not_quality"]))
+
+    # Slot 7 — biggest uncertainty.
+    if ctx.b.drivers is not None and ctx.b.drivers.uncertainty_statement:
+        statements.append(Statement.code("Biggest uncertainty:"))
+        statements.append(Statement.verbatim(
+            ctx.b.drivers.uncertainty_statement,
+            "DecisionDrivers.uncertainty_statement"))
+    elif ctx.b.solution.key_uncertainties:
+        statements.append(Statement.code("Biggest uncertainty:"))
+        for u in ctx.b.solution.key_uncertainties:
+            statements.append(Statement.verbatim(u, "SolutionEstimate.key_uncertainties"))
+
+    # Slot 8 — constraints and blockers.
+    blockers = _gaps_by_kind(ctx, GapKind.CURRENCY_UNRESOLVED,
+                             GapKind.UNRESOLVED_POLICY,
+                             GapKind.BELOW_PRIMARY_VERIFICATION)
+    if blockers:
+        statements.append(Statement.code("Constraints and unresolved items:"))
+        for g in blockers:
+            statements.append(Statement.code(g.detail or g.label))
+
+    return ReportSection(key="executive_summary", number=1,
+                         title="Executive Summary", layer=1,
+                         statements=statements, figures=figures)
+
+
+def _gaps_by_kind(ctx: _Ctx, *kinds: GapKind) -> list[Gap]:
+    wanted = set(kinds)
+    return [g for g in ctx.gaps if g.kind in wanted]
+
+
+# ---------------------------------------------------------------------------
+# 7. Implementation Requirements
+# ---------------------------------------------------------------------------
+
+def _section_implementation(ctx: _Ctx) -> ReportSection:
+    economics, solution = ctx.b.economics, ctx.b.solution
+    if economics is None or economics.implementation is None:
+        return _empty_section(ctx, 7, GapKind.NOT_COMPUTABLE_SCORE,
+                              "the economic engine could not run, so no "
+                              "implementation cost breakdown was calculated")
+
+    statements: list[Statement] = [
+        Statement.code("What it takes to build and run this solution, by stage. "
+                       "The stage partition is a calibration assumption with its "
+                       "version — not a project plan.")]
+    figures: list[Figure] = []
+
+    figures.append(ctx.category(
+        "impl.effort_band", "Engineering effort band",
+        solution.engineering_effort.value,
+        derivation=solution.effort_basis or "derived from assessed scope",
+        provenance=Provenance.DERIVED, origin="solution.scope"))
+    figures.append(ctx.from_range(
+        "impl.engineering_hours", "Engineering hours",
+        solution.engineering_hours, unit=Unit.HOURS, origin="solution.estimator"))
+
+    if economics.labor_rate_geography:
+        figures.append(ctx.category(
+            "impl.labor_geography", "Labor-rate geography",
+            economics.labor_rate_geography,
+            derivation="geography that set the implementation labor rate",
+            provenance=Provenance.DERIVED, origin="calc.engine"))
+
+    # Stages from the collected process (buy/build where recorded).
+    stages = [s for s in ctx.b.state.process_stages if str(s.stage).strip()]
+    table_rows: list[list[Cell]] = []
+    for s in stages:
+        table_rows.append([
+            Cell(text=s.stage),
+            Cell(text=s.buy_or_build.value.replace("_", " ")),
+            Cell(text=s.vendor_or_approach or "—"),
+        ])
+    tables: list[ReportTable] = []
+    if table_rows:
+        tables.append(_table(
+            "impl.stages", "Implementation stages (as collected)",
+            ["Stage", "Buy/build", "Vendor or approach"], table_rows,
+            note="recorded during the interview; not a worked project plan"))
+
+    imp, total, notes = _breakdown(ctx, "impl", economics.implementation,
+                                   "calc.implementation", GapKind.ABSENT_COST)
+    figures += imp
+    figures.append(total)
+
+    return ReportSection(key="implementation_reqs", number=7,
+                         title="Implementation Requirements", layer=2,
+                         statements=statements, figures=figures,
+                         tables=tables, notes=notes)
+
+
+# ---------------------------------------------------------------------------
+# 8. AI Operating Cost
+# ---------------------------------------------------------------------------
+
+def _section_ai_operating(ctx: _Ctx) -> ReportSection:
+    economics = ctx.b.economics
+    if economics is None or economics.ai_operating is None:
+        return _empty_section(ctx, 8, GapKind.NOT_COMPUTABLE_SCORE,
+                              "the economic engine could not run, so no AI "
+                              "operating cost was calculated")
+
+    statements: list[Statement] = [Statement.code(
+        "What the AI solution costs to run each year, by component. Components "
+        "that were not collected are shown as not collected and are excluded "
+        "from the total."),
+        Statement.code(QUALIFIERS["absent_is_not_zero"]),
+        Statement.code(QUALIFIERS["range_semantics"])]
+
+    figures, total, notes = _breakdown(ctx, "ai_operating",
+                                       economics.ai_operating,
+                                       "calc.ai_state", GapKind.ABSENT_COST)
+
+    # Inference pricing citations, when the inference line used a priced model.
+    if economics.inference_pricing_ids:
+        res = ctx.index.resolve_many(economics.inference_pricing_ids)
+        for c in res.citations:
+            statements.append(Statement.verbatim(
+                f"Inference priced from: {c.source} ({c.registry.value})",
+                "EconomicResult.inference_pricing_ids"))
+
+    # Currency mismatch: inference excluded -> this total is a floor.
+    if any("currency" in w for w in economics.warnings):
+        ctx.gap(GapKind.CURRENCY_UNRESOLVED, "Inference excluded for currency",
+                "; ".join(w for w in economics.warnings if "currency" in w),
+                "the AI operating total excludes inference and is therefore a "
+                "floor in addition to any absent components")
+
+    table_rows = [[Cell(text=f.label), Cell(figure_key=f.key),
+                   Cell(text=("not collected"
+                              if f.status is not FigureStatus.KNOWN
+                              else (f.provenance.value if f.provenance
+                                    else "provenance unknown")))]
+                  for f in figures]
+    table_rows.append([Cell(text="Total (known components only)"),
+                       Cell(figure_key=total.key), Cell(text="derived")])
+    tables = [_table("ai_operating.breakdown", "AI annual operating cost",
+                     ["Component", "Amount", "Provenance"], table_rows,
+                     note=notes[0] if notes else "")]
+
+    return ReportSection(key="ai_operating_cost", number=8,
+                         title="AI Operating Cost", layer=2,
+                         statements=statements, figures=figures + [total],
+                         tables=tables, notes=notes,
+                         gaps=_gaps_by_kind(ctx, GapKind.CURRENCY_UNRESOLVED,
+                                            GapKind.ABSENT_COST))
+
+
+# ---------------------------------------------------------------------------
+# 9. Expected Benefits — a first-year view, cost savings only, never ROI.
+# ---------------------------------------------------------------------------
+
+def _section_benefits(ctx: _Ctx) -> ReportSection:
+    economics = ctx.b.economics
+    if economics is None or economics.first_year is None:
+        return _empty_section(ctx, 9, GapKind.NOT_COMPUTABLE_SCORE,
+                              "the economic engine could not run, so no "
+                              "benefits were calculated")
+
+    fy = economics.first_year
+    statements: list[Statement] = [
+        Statement.code(QUALIFIERS["first_year"]),
+        Statement.code(QUALIFIERS["cost_savings_only"]),
+        Statement.code(QUALIFIERS["range_semantics"]),
+        Statement.code("This is an analytical view of the first-year cost "
+                       "position. It is not ROI, not a lifetime business case, "
+                       "and not a recommendation.")]
+    figures: list[Figure] = [
+        ctx.from_range("benefits.annual_savings", "Expected annual cost savings",
+                       fy.annual_cost_savings, unit=Unit.MONEY,
+                       origin="calc.lifecycle"),
+        ctx.from_range("benefits.first_year_ai_cost",
+                       "First-year implementation + operating cost",
+                       fy.first_year_ai_cost, unit=Unit.MONEY,
+                       origin="calc.lifecycle"),
+        ctx.from_range("benefits.first_year_net", "First-year net benefit",
+                       fy.first_year_net_benefit, unit=Unit.MONEY,
+                       origin="calc.lifecycle"),
+    ]
+    if fy.monthly_net_benefit is not None:
+        figures.append(ctx.from_range(
+            "benefits.monthly_net", "Monthly net benefit",
+            fy.monthly_net_benefit, unit=Unit.MONEY, origin="calc.lifecycle"))
+
+    if fy.payback_months is not None:
+        figures.append(ctx.from_range(
+            "benefits.payback", "Payback period", fy.payback_months,
+            unit=Unit.MONTHS, origin="calc.lifecycle"))
+    if fy.payback_statement:
+        statements.append(Statement.verbatim(
+            fy.payback_statement, "EconomicResult.first_year.payback_statement"))
+    else:
+        figures.append(ctx.not_computable(
+            "benefits.payback", "Payback period",
+            ["positive monthly net benefit across the first year"]))
+
+    # Unit economics.
+    ue = economics.unit_economics
+    if ue is not None:
+        figures.append(ctx.from_range(
+            "benefits.current_unit_cost", "Current cost per valid unit",
+            ue.current_unit_cost, unit=Unit.MONEY, origin="calc.lifecycle"))
+        figures.append(ctx.from_range(
+            "benefits.ai_unit_cost", "AI cost per valid unit",
+            ue.ai_unit_cost, unit=Unit.MONEY, origin="calc.lifecycle"))
+        if ue.note:
+            statements.append(Statement.verbatim(
+                ue.note, "EconomicResult.unit_economics.note"))
+
+    # Freed capacity is CAPACITY under CAPACITY_RETAINED, never a saving.
+    if economics.labor_realization is not None \
+            and economics.labor_realization.value == "capacity_retained":
+        if economics.freed_capacity_value is not None:
+            figures.append(ctx.from_range(
+                "benefits.freed_capacity", "Freed capacity value",
+                economics.freed_capacity_value, unit=Unit.MONEY,
+                origin="calc.ai_state"))
+        statements.append(Statement.verbatim(
+            economics.realization_statement,
+            "EconomicResult.realization_statement"))
+        statements.append(Statement.code(
+            "The freed-capacity value above is capacity, not savings. It is not "
+            "added to the cost-savings figures."))
+
+    # Quality comparison, or its absence.
+    q = economics.quality_comparison or {}
+    if q.get("comparable"):
+        statements.append(Statement.verbatim(
+            q.get("statement") or "", "EconomicResult.quality_comparison"))
+    else:
+        ctx.gap(GapKind.UNRESOLVED_FIELD, "Current quality not comparable",
+                q.get("statement") or "no current-process quality measurement",
+                "the current-versus-AI quality comparison is unavailable, so "
+                "current valid output is not assumed to be 100%")
+
+    return ReportSection(key="expected_benefits", number=9,
+                         title="Expected Benefits", layer=2,
+                         statements=statements, figures=figures)
+
+
+# ---------------------------------------------------------------------------
+# 10. Risks and Reliability
+# ---------------------------------------------------------------------------
+
+def _section_risks(ctx: _Ctx) -> ReportSection:
+    solution, economics, scores = ctx.b.solution, ctx.b.economics, ctx.b.scores
+    statements: list[Statement] = [Statement.code(
+        "Risks implied by the proposed architecture, each with the controls "
+        "the selected implementation actually offers. Controls come from the "
+        "registry, not from prose.")]
+    figures: list[Figure] = []
+    gaps: list[Gap] = []
+
+    # Compliance blocker first, and un-averaged.
+    if solution.compliance_gap:
+        statements.append(Statement.code("A hard compliance blocker applies:"))
+        statements.append(Statement.verbatim(
+            solution.compliance_statement or "compliance requirement could not "
+            "be satisfied", "SolutionEstimate.compliance_statement"))
+        for exclusion in solution.compliance_exclusions:
+            gaps.append(ctx.gap(
+                GapKind.REGISTRY_GAP, "Candidate excluded for compliance",
+                str(exclusion),
+                "the candidate could not satisfy a hard compliance requirement"))
+
+    # Structured risk controls, grouped by category.
+    table_rows: list[list[Cell]] = []
+    for rc in solution.risk_controls:
+        category = str(rc.get("category", "")).replace("_", " ")
+        risk = rc.get("risk") or ""
+        controls = rc.get("controls") or []
+        impl_controls = rc.get("implementation_controls") or []
+        shown = controls + (["implementation: " + c for c in impl_controls]
+                            if impl_controls else [])
+        table_rows.append([Cell(text=category), Cell(text=risk),
+                           Cell(text="; ".join(shown) or "—")])
+    tables: list[ReportTable] = []
+    if table_rows:
+        tables.append(_table(
+            "risks.controls", "Risks and controls",
+            ["Category", "Risk", "Controls"], table_rows))
+
+    # Risk score.
+    if scores is not None:
+        figures.append(_score_figure(ctx, scores.risk))
+
+    # Reliability consequence.
+    rel = economics.reliability or {} if economics is not None else {}
+    if rel.get("statement"):
+        statements.append(Statement.verbatim(
+            rel["statement"], "EconomicResult.reliability.statement"))
+    if economics is not None and any(
+            l.key == "reliability_gap" and l.amount is not None
+            for l in economics.ai_operating.lines):
+        figures.append(ctx.from_range(
+            "risks.reliability_cost", "Reliability-gap handling cost",
+            next(l.amount for l in economics.ai_operating.lines
+                 if l.key == "reliability_gap" and l.amount is not None),
+            unit=Unit.MONEY, origin="calc.reliability"))
+    elif rel.get("gap"):
+        gaps.append(ctx.gap(
+            GapKind.UNRESOLVED_FIELD, "Reliability gap not costable",
+            rel.get("statement") or f"gap {rel.get('gap')}",
+            "the reliability shortfall is a qualitative risk; no operational "
+            "cost could be estimated for it"))
+
+    for u in solution.key_uncertainties:
+        statements.append(Statement.verbatim(
+            u, "SolutionEstimate.key_uncertainties"))
+
+    return ReportSection(key="risks_and_reliability", number=10,
+                         title="Risks and Reliability", layer=2,
+                         statements=statements, figures=figures,
+                         tables=tables, gaps=gaps)
+
+
+# ---------------------------------------------------------------------------
+# 11. Assumptions — the audit layer. Calibration tables + assumed figures.
+# ---------------------------------------------------------------------------
+
+def _assumption_table(key: str, label: str, columns: list[str],
+                      rows: list[list[Cell]]) -> ReportTable:
+    return _table(key, label, columns, rows)
+
+
+def _section_assumptions(ctx: _Ctx) -> ReportSection:
+    from calc import calibration as econ_cal
+    from calc import scoring_calibration as score_cal
+    from solution import calibration as scope_cal
+
+    statements: list[Statement] = [
+        Statement.code("Every assumption the analysis rested on, so a second "
+                       "person can re-run or question it. None of these is "
+                       "empirical industry data — they are versioned product "
+                       "calibrations.")]
+    tables: list[ReportTable] = []
+
+    def _rows_for(table_rows: list[dict], id_key: str) -> list[list[Cell]]:
+        return [[Cell(text=str(r.get(id_key, ""))),
+                 Cell(text=str(r.get("rationale", ""))),
+                 Cell(text=str(r.get("version", ""))),
+                 Cell(text=str(r.get("last_reviewed", "")))]
+                for r in table_rows]
+
+    econ_rows = econ_cal.audit_table()
+    if econ_rows:
+        tables.append(_assumption_table(
+            "assumptions.economic", "Economic calibration",
+            ["Id", "Rationale", "Version", "Last reviewed"],
+            _rows_for(econ_rows, "calibration_id")))
+
+    score_rows = score_cal.audit_table()
+    if score_rows:
+        tables.append(_assumption_table(
+            "assumptions.scoring", "Scoring calibration",
+            ["Id", "Rationale", "Version", "Last reviewed"],
+            _rows_for(score_rows, "parameter_id")))
+
+    scope_rows = scope_cal.all_calibration_params()
+    if scope_rows:
+        tables.append(_assumption_table(
+            "assumptions.scope", "Solution/scope calibration",
+            ["Id", "Rationale", "Version", "Last reviewed"],
+            [[Cell(text=p.key), Cell(text=p.rationale),
+              Cell(text=str(p.version)), Cell(text=str(p.last_reviewed or ""))]
+             for p in scope_rows]))
+
+    # Assumed figures actually used by this report.
+    assumed_figs = [f for f in ctx.ledger
+                    if f.provenance is Provenance.ASSUMED]
+    if assumed_figs:
+        statements.append(Statement.code(
+            "Assumed figures carried into this assessment:"))
+        tables.append(_assumption_table(
+            "assumptions.figures", "Assumed figures used",
+            ["Figure", "Value source"],
+            [[Cell(text=f.label),
+              Cell(text=f.derivation or (f.absence_reason or "assumed"))]
+             for f in assumed_figs]))
+
+    statements.append(Statement.code(
+        f"Economic calibration version {econ_cal.CALIBRATION_VERSION}; scoring "
+        f"calibration version {score_cal.SCORING_CALIBRATION_VERSION}; scope "
+        f"calibration version "
+        f"{scope_cal.all_calibration_params()[0].version if scope_rows else 'n/a'}."))
+
+    return ReportSection(key="assumptions", number=11, title="Assumptions",
+                         layer=3, statements=statements, tables=tables)
+
+
+# ---------------------------------------------------------------------------
+# 12. External Sources — only evidence actually used by this report.
+# ---------------------------------------------------------------------------
+
+def _section_external(ctx: _Ctx) -> ReportSection:
+    statements: list[Statement] = [
+        Statement.code("Sources this report actually drew on, grouped by "
+                       "registry, each with its verification tier. Only "
+                       "sources that contributed to this assessment appear; "
+                       "the repository holds others that were not used here.")]
+    tables: list[ReportTable] = []
+    gaps: list[Gap] = []
+
+    # Order citations deterministically by id; group by registry.
+    used_ids = {sid for figs in ctx.usage.values() for sid in figs} \
+        if hasattr(ctx, "usage") else set()
+    # Gather every id referenced by ledger figures.
+    used_ids = {sid for f in ctx.ledger for sid in f.source_ids}
+    citations = [c for c in ctx.index.citations.values()
+                 if c.evidence_id in used_ids]
+    citations.sort(key=lambda c: (c.registry.value, c.evidence_id))
+
+    rows: list[list[Cell]] = []
+    for c in citations:
+        rows.append([
+            Cell(text=c.evidence_id), Cell(text=c.source),
+            Cell(text=c.verification or "not recorded"),
+            Cell(text=c.provenance.value if c.provenance else "unknown"),
+            Cell(text=c.as_of or "—"),
+            Cell(text="; ".join(ctx.usage.get(c.evidence_id, []))),
+        ])
+    if rows:
+        tables.append(_assumption_table(
+            "external_sources.ledger", "Evidence used",
+            ["Id", "Source", "Verification", "Provenance", "As of", "Used in"],
+            rows))
+    else:
+        statements.append(Statement.code(
+            "No external source was cited by any figure in this report."))
+
+    # Figures whose evidence is below primary verification.
+    below = [c for c in citations if c.below_primary]
+    if below:
+        for c in below:
+            gaps.append(ctx.gap(
+                GapKind.BELOW_PRIMARY_VERIFICATION,
+                "Evidence verified below primary",
+                f"{c.evidence_id} — {c.verification or 'no tier recorded'}",
+                "this figure rests on a source that was not verified against "
+                "the primary document"))
+
+    # Pack health for the sector.
+    from lib.benchmarks import load_pack
+    pack = load_pack(ctx.b.state.sector)
+    statements.append(Statement.verbatim(
+        f"Sector benchmark pack health: {pack.health()}",
+        "BenchmarkPack.health"))
+    if ctx.b.state.sector.value == "customer_support":
+        statements.append(Statement.code(
+            "The customer-support benchmark pack is materially weaker than the "
+            "document-processing pack; figures sourced from it carry lower "
+            "verification and should be read with that caveat."))
+
+    return ReportSection(key="external_sources", number=12,
+                         title="External Sources", layer=3,
+                         statements=statements, tables=tables, gaps=gaps)
+
+
+# ---------------------------------------------------------------------------
+# 13. Sensitivity — magnitude at each input's own bounds, not importance.
+# ---------------------------------------------------------------------------
+
+def _section_sensitivity(ctx: _Ctx) -> ReportSection:
+    sens = ctx.b.sensitivity
+    if sens is None:
+        return _empty_section(ctx, 13, GapKind.NOT_COMPUTABLE_SCORE,
+                              "no sensitivity sweep was produced for this "
+                              "assessment")
+
+    statements: list[Statement] = [
+        Statement.code(QUALIFIERS["sensitivity_not_threshold"]),
+        Statement.code(QUALIFIERS["sensitivity_vs_drivers"]),
+    ]
+    if sens.note:
+        statements.append(Statement.verbatim(sens.note,
+                                             "SensitivityReport.note"))
+
+    figures: list[Figure] = [
+        ctx.number("sensitivity.baseline", f"Baseline {sens.metric}",
+                   sens.baseline, unit=Unit.SCORE,
+                   derivation=f"baseline value of {sens.metric}",
+                   provenance=Provenance.DERIVED, origin="calc.sensitivity"),
+    ]
+
+    rows: list[list[Cell]] = []
+    gaps: list[Gap] = []
+    for imp in sens.impacts:
+        status = "failed" if imp.failed else ("ok" if imp.swing is not None
+                                              else "skipped")
+        reason = imp.failed or ""
+        rows.append([
+            Cell(text=imp.label),
+            Cell(text=imp.bounds or imp.variable),
+            Cell(text=f"{imp.low_metric:g}" if imp.low_metric is not None else "—"),
+            Cell(text=f"{imp.high_metric:g}" if imp.high_metric is not None else "—"),
+            Cell(text=f"{imp.swing:g}" if imp.swing is not None else "—"),
+            Cell(text=status),
+            Cell(text=reason or (imp.source or "")),
+        ])
+        if imp.failed:
+            gaps.append(ctx.gap(
+                GapKind.NOT_COMPUTABLE_SCORE, f"{imp.label} could not be evaluated",
+                imp.failed,
+                "this variable's impact could not be computed within its bounds"))
+
+    for skipped in sens.skipped:
+        rows.append([Cell(text=skipped), Cell(text="—"), Cell(text="—"),
+                     Cell(text="—"), Cell(text="—"),
+                     Cell(text="skipped"),
+                     Cell(text="no defensible range — not swept rather than "
+                               "assigned an invented one")])
+
+    tables = [_assumption_table(
+        "sensitivity.table", f"Sensitivity of {sens.metric}",
+        ["Variable", "Bounds", "Low outcome", "High outcome", "Swing",
+         "Status", "Reason"],
+        rows)] if rows else []
+
+    return ReportSection(key="sensitivity_analysis", number=13,
+                         title="Sensitivity Analysis", layer=2,
+                         statements=statements, figures=figures,
+                         tables=tables, gaps=gaps)
+
+
+# ---------------------------------------------------------------------------
+# 14. What to Validate Next — deterministic, inherits driver impact.
+# ---------------------------------------------------------------------------
+
+# Trigger -> (key, gap_kind, title). Nothing invented; each maps to an upstream
+# finding.
+def _validation_items(ctx: _Ctx) -> list[ValidationItem]:
+    items: list[ValidationItem] = []
+    seen: set[str] = set()
+
+    def add(key: str, kind: GapKind, title: str, missing: str, why: str,
+            what: str, impact: Optional[float]) -> None:
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(ValidationItem(
+            key=key, title=title, what_is_missing=missing, why_it_matters=why,
+            what_to_collect=what, gap_kind=kind, impact=impact))
+
+    # Uncertainty callout -> measure that variable.
+    if ctx.b.drivers is not None:
+        callout = ctx.b.drivers.uncertainty_callout
+        if callout is not None:
+            add("validate.uncertainty", GapKind.UNRESOLVED_FIELD,
+                "Measure the most uncertain variable",
+                f"the most uncertain driver is {callout.label}",
+                callout.statement, "obtain a narrower range for this input",
+                callout.impact)
+        # Top drivers whose provenance is estimated/assumed -> validate input.
+        for d in ctx.b.drivers.drivers:
+            if d.impact > 0 and d.provenance in ("estimated", "assumed"):
+                add(f"validate.driver.{d.key}", GapKind.UNRESOLVED_FIELD,
+                    f"Validate the {d.label} input",
+                    f"{d.label} rests on an {d.provenance} value",
+                    d.statement,
+                    "collect a measured or sourced value for this input",
+                    d.impact)
+
+    # Absent cost components.
+    if ctx.b.economics is not None:
+        for comp in ctx.b.economics.absent_components:
+            add(f"validate.cost.{comp}", GapKind.ABSENT_COST,
+                "Collect a missing cost component",
+                f"{comp} was not collected", "it is excluded, so the total is "
+                "a floor", "supply a value or confirm it is genuinely zero",
+                None)
+
+    # Missing score inputs.
+    if ctx.b.scores is not None:
+        for score in (ctx.b.scores.economic, ctx.b.scores.feasibility,
+                      ctx.b.scores.risk):
+            for mi in score.missing_inputs:
+                add(f"validate.score.{score.key}.{mi}",
+                    GapKind.NOT_COMPUTABLE_SCORE,
+                    f"Supply input for the {score.label} score",
+                    mi, f"the {score.label} score is not computable without it",
+                    "collect this input", None)
+
+    # Estimator needs more information.
+    for nmi in ctx.b.solution.needs_more_information:
+        add(f"validate.nmi.{nmi}", GapKind.UNRESOLVED_FIELD,
+            "Resolve an unanswered estimator question", nmi,
+            "the estimator flagged this as needed before a reliable answer",
+            "provide the missing information", None)
+
+    # Unevaluated reference conditions.
+    if ctx.b.solution.reference_comparison is not None:
+        for cond in ctx.b.solution.reference_comparison.unevaluated_conditions:
+            add(f"validate.ref.{cond}", GapKind.UNEVALUATED_CONDITION,
+                "Evaluate an unevaluated reference condition", cond,
+                "the baseline could not be applied or ruled out for this "
+                "condition", "capture the fact it depends on", None)
+
+    # Divergent labor formulations.
+    if ctx.b.economics is not None \
+            and ctx.b.economics.labor_consistency.status.value == "divergent":
+        add("validate.labor", GapKind.UNRESOLVED_FIELD,
+            "Reconcile the two labor views",
+            "the task-based and workforce-based labor formulations diverge",
+            ctx.b.economics.labor_consistency.verdict,
+            "reconcile or explain the divergence", None)
+
+    # Sub-primary evidence.
+    used_ids = {sid for f in ctx.ledger for sid in f.source_ids}
+    for c in ctx.index.citations.values():
+        if c.evidence_id in used_ids and c.below_primary:
+            add(f"validate.ev.{c.evidence_id}",
+                GapKind.BELOW_PRIMARY_VERIFICATION,
+                "Obtain the primary source",
+                f"{c.evidence_id} is verified {c.verification or 'not recorded'}",
+                "a figure rests on this source; its tier is below primary",
+                "obtain the primary document", None)
+
+    # Missing quality comparison.
+    q = (ctx.b.economics.quality_comparison or {}) if ctx.b.economics is not None else {}
+    if not q.get("comparable"):
+        add("validate.quality", GapKind.UNRESOLVED_FIELD,
+            "Measure current-process quality",
+            "no current-quality measurement was collected",
+            "the current-versus-AI quality comparison is unavailable",
+            "collect the sector's quality metric", None)
+
+    # Compliance gaps.
+    if ctx.b.solution.compliance_gap:
+        add("validate.compliance", GapKind.REGISTRY_GAP,
+            "Obtain the compliance attestation",
+            "a hard compliance requirement is unsatisfied",
+            ctx.b.solution.compliance_statement or "compliance cannot be shown",
+            "obtain the required attestation or evidence", None)
+    for verdict in ctx.b.solution.compliance_verdicts:
+        status = str(verdict.get("status", "unknown"))
+        if status in ("unknown", "unsupported"):
+            add(f"validate.comp.{verdict.get('standard','')}", GapKind.REGISTRY_GAP,
+                "Resolve a compliance requirement",
+                f"{verdict.get('standard')} is {status}",
+                "an unbacked claim cannot satisfy a requirement",
+                "obtain the attestation", None)
+
+    # Unresolved realization policy.
+    if ctx.b.labor_realization is None:
+        add("validate.realization", GapKind.UNRESOLVED_POLICY,
+            "Confirm the labor realization policy",
+            "no capacity policy was chosen",
+            "the headline economics depend on whether freed labor is treated "
+            "as savings or capacity",
+            "choose cost-eliminated or capacity-retained", None)
+
+    # Unresolved currency.
+    if not ctx.currency.resolved:
+        add("validate.currency", GapKind.CURRENCY_UNRESOLVED,
+            "Resolve the currency",
+            ctx.currency.basis,
+            "money figures render without a currency unit",
+            "confirm the geography or currency", None)
+
+    # Rank: items with a driver impact first; ties by fixed gap-kind order.
+    order = {GapKind.REGISTRY_GAP: 0, GapKind.ABSENT_COST: 1,
+             GapKind.UNRESOLVED_FIELD: 2, GapKind.UNRESOLVED_POLICY: 3,
+             GapKind.NOT_COMPUTABLE_SCORE: 4,
+             GapKind.BELOW_PRIMARY_VERIFICATION: 5,
+             GapKind.CURRENCY_UNRESOLVED: 6, GapKind.UNEVALUATED_CONDITION: 7}
+    items.sort(key=lambda i: ((0 if i.impact is not None else 1),
+                              order.get(i.gap_kind, 99), i.key))
+    return items
+
+
+def _section_validate_next(ctx: _Ctx) -> ReportSection:
+    items = _validation_items(ctx)
+    statements: list[Statement] = [Statement.code(
+        "What to validate before relying on this analysis. Each item names "
+        "what is missing, why it matters, and what to collect. Nothing here is "
+        "a new scoring formula.")]
+    figures: list[Figure] = []
+    table_rows = []
+    for item in items:
+        table_rows.append([
+            Cell(text=item.title),
+            Cell(text=item.what_is_missing),
+            Cell(text=item.why_it_matters),
+            Cell(text=item.what_to_collect),
+            Cell(text=(f"{item.impact:.3g}" if item.impact is not None else "—")),
+        ])
+        figures.append(ctx.not_computable(
+            item.key, item.title, [item.what_is_missing]))
+    tables = [_assumption_table(
+        "validate.table", "What to validate next",
+        ["Item", "What is missing", "Why it matters", "What to collect",
+         "Driver impact"], table_rows)] if table_rows else []
+    if not items:
+        statements.append(Statement.code(
+            "No unresolved validation items were identified for this "
+            "assessment."))
+    return ReportSection(key="what_to_validate_next", number=14,
+                         title="What to Validate Next", layer=1,
+                         statements=statements, figures=figures,
+                         tables=tables)
+
+
+# ---------------------------------------------------------------------------
+# Manifest
+# ---------------------------------------------------------------------------
+
+def _build_manifest(ctx: _Ctx, mode: ReportMode) -> ReportManifest:
+    from lib.benchmarks import load_pack
+    from calc import calibration as econ_cal
+    from calc import scoring_calibration as score_cal
+    from solution import calibration as scope_cal
+
+    pack = load_pack(ctx.b.state.sector)
+    solution = ctx.b.solution
+    scope_params = scope_cal.all_calibration_params()
+    return ReportManifest(
+        generated_at="",  # supplied by the caller/orchestration layer
+        sector=ctx.b.state.sector,
+        pack_version=pack.pack_version,
+        pack_health=pack.health(),
+        economic_calibration_version=econ_cal.CALIBRATION_VERSION,
+        scoring_calibration_version=score_cal.SCORING_CALIBRATION_VERSION,
+        solution_calibration_version=(scope_params[0].version
+                                      if scope_params else None),
+        registry_pattern_id=solution.recommended_pattern,
+        registry_implementation_id=solution.recommended_implementation,
+        labor_realization=(ctx.b.labor_realization.value
+                           if ctx.b.labor_realization else None),
+        labor_realization_source=ctx.b.labor_realization_source,
+        currency=ctx.currency.currency,
+        currency_basis=ctx.currency.basis,
+        llm_model=None, llm_used_for=[], guard_actions=[],
+        figure_ledger=list(ctx.ledger))
+
+
+# ---------------------------------------------------------------------------
+# Entry point — deterministic, no LLM, no engine call.
+# ---------------------------------------------------------------------------
+
+def assemble(bundle: ReportInput) -> Report:
+    """Convert one frozen ReportInput into one fully-renderable Report.
+
+    Deterministic: `assemble(b) == assemble(b)` byte-for-byte (the manifest's
+    `generated_at` is left empty here and supplied by the orchestration layer,
+    so no timestamp enters equality-sensitive content).
+    """
+    ctx = _Ctx(bundle)
+    mode, reason = determine_mode(bundle)
+    sections: list[ReportSection] = []
+
+    # Layer 1 — frame first, then the first substantive content, then the
+    # close. Approved decision 18.1: Executive Summary keeps position 1 as a
+    # frame; Decision Drivers are the first substantive content; What to
+    # Validate Next closes Layer 1.
+    sections.append(_section_executive(ctx, mode, reason))
+    sections.append(_section_drivers(ctx))
+
+    # Analysis — Layer 2, in the approved order (spec §4). Alternatives (§6)
+    # and Sensitivity (§13) follow the risk section.
+    sections.append(_section_problem(ctx))
+    sections.append(_section_current_process(ctx))
+    sections.append(_section_current_cost(ctx))
+
+    if mode is not ReportMode.REFUSED:
+        sections.append(_section_solution(ctx))
+        sections.append(_section_implementation(ctx))
+        sections.append(_section_ai_operating(ctx))
+        sections.append(_section_benefits(ctx))
+        sections.append(_section_risks(ctx))
+        sections.append(_section_alternatives(ctx))
+        sections.append(_section_scores(ctx))
+        sections.append(_section_sensitivity(ctx))
+
+    # Audit — Layer 3.
+    sections.append(_section_assumptions(ctx))
+    sections.append(_section_external(ctx))
+
+    # Layer 1 close.
+    sections.append(_section_validate_next(ctx))
+
+    # A report whose currency could not be resolved files the gap once, in the
+    # summary, so it cannot be missed (approved decision 4: unresolved currency
+    # is exposed, never silently defaulted).
+    if not ctx.currency.resolved:
+        ctx.gap(GapKind.CURRENCY_UNRESOLVED, "Currency unresolved",
+                ctx.currency.basis,
+                "money figures render without a currency unit; no symbol or "
+                "convention was invented")
+        exec_sum = next(s for s in sections if s.key == "executive_summary")
+        exec_sum.gaps = list(exec_sum.gaps) + [
+            g for g in ctx.gaps if g.kind is GapKind.CURRENCY_UNRESOLVED]
+
+    manifest = _build_manifest(ctx, mode)
+    return Report(mode=mode, refusal_reason=reason, sections=sections,
+                  manifest=manifest)

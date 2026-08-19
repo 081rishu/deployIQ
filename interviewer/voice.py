@@ -54,6 +54,9 @@ class VoiceSession:
 
     def __init__(self, warm_up: bool = True) -> None:
         self.state: Optional[AssessmentState] = None
+        # Transport metadata only: the API returns the STT text with its
+        # matching websocket turn; it never participates in interview logic.
+        self.last_transcript: Optional[str] = None
         # Conversation context lives beside the state for the life of the
         # socket. Voice implements no assessment logic of its own — it holds
         # the same two objects the text path ships back and forth.
@@ -81,6 +84,7 @@ class VoiceSession:
         name = filename or _detect_filename(audio)
         log.info("respond audio_bytes=%d filename=%s", len(audio) if isinstance(audio, (bytes, bytearray)) else -1, name)
         transcript = transcribe_audio(audio, language=language, filename=name)
+        self.last_transcript = transcript
         log.info("transcript=%r", transcript)
         result = run_turn(self.state, transcript, self.context)
         self.context = result.context

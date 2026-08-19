@@ -1,0 +1,479 @@
+"""P7 acceptance tests — API integration over the canonical assessment pipeline."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import os
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "openai" not in sys.modules:
+    _s = types.ModuleType("openai")
+    _s.OpenAI = lambda **kw: None
+    sys.modules["openai"] = _s
+
+from fastapi.testclient import TestClient
+
+import api.interview as interview_api
+import api.main as api_main
+import api.voice as voice_api
+from calc.ai_state import LaborRealization
+from interviewer.conversation import ConversationContext
+from interviewer.engine import TurnResult
+import interviewer.voice as voice_session_mod
+from pipeline import orchestrate as orch
+from report import narrate as narrate_mod
+from report.schema import LaborRealizationSource, ReportMode
+from schemas.assessment_state import AssessmentState, InterviewStatus, RiskInputs
+from scripts.report_cases import rng, solution, state
+
+failures: list[str] = []
+checks = 0
+
+
+def check(case: str, cond: bool, desc: str) -> None:
+    global checks
+    checks += 1
+    print(f"    [{'PASS' if cond else 'FAIL'}] {desc}")
+    if not cond:
+        failures.append(f"{case}: {desc}")
+
+
+DOC_CAPS = ["ingest", "extract", "classify", "validate", "human_review"]
+DOC_TASKS = [
+    {"task": "ingest invoices", "capability": "ingest",
+     "automation_min": 90, "automation_max": 98,
+     "handling_time_min_minutes": 1, "handling_time_max_minutes": 1,
+     "confidence": "high", "hitl": "autonomous", "rationale": "scriptable intake"},
+    {"task": "extract line items", "capability": "extract",
+     "automation_min": 30, "automation_max": 45,
+     "handling_time_min_minutes": 4, "handling_time_max_minutes": 4,
+     "confidence": "medium", "hitl": "human_review", "rationale": "semi-structured"},
+    {"task": "validate against PO", "capability": "validate",
+     "automation_min": 40, "automation_max": 60,
+     "handling_time_min_minutes": 1, "handling_time_max_minutes": 1,
+     "confidence": "low", "hitl": "human_review", "rationale": "three-way match"},
+]
+
+
+def install_llm_stub() -> None:
+    def fake(system, user, **kw):
+        s = str(system).lower()
+        if "decompose" in s:
+            return {"capabilities": DOC_CAPS}
+        if "estimate automation per workflow task" in s:
+            return {"tasks": DOC_TASKS}
+        if "explaining pre-selected alternative approaches" in s:
+            return {"explanations": []}
+        return {}
+
+    import llm.openai_client as oc
+    from interviewer import engine as interviewer_engine
+    from solution import capabilities as caps_mod
+
+    oc.complete_json = fake
+    interviewer_engine.complete_json = fake
+    caps_mod.complete_json = fake
+
+
+def base_payload(**state_kw) -> dict:
+    return {
+        "state": state(**state_kw).model_dump(mode="json"),
+        "labor_realization": LaborRealization.COST_ELIMINATED.value,
+        "labor_realization_source": LaborRealizationSource.USER.value,
+        "enable_narration": False,
+        "report_format": "both",
+    }
+
+
+def post_run(client: TestClient, payload: dict) -> dict:
+    res = client.post("/api/assessment/run", json=payload)
+    check("http", res.status_code == 200, "assessment run request succeeds")
+    return res.json()
+
+
+def case_A_B_C(client: TestClient) -> None:
+    print("\nA/B/C — app imports, valid request reaches pipeline, malformed request")
+    check("A", hasattr(api_main, "app"), "FastAPI app imports")
+
+    captured = {"called": 0, "state_type": None}
+    orig = api_main.orchestrate.run_assessment
+    try:
+        def fake_run(s: AssessmentState, **kw):
+            captured["called"] += 1
+            captured["state_type"] = type(s)
+            return SimpleNamespace(
+                final_report=SimpleNamespace(mode=ReportMode.PARTIAL),
+                used_narration=False,
+                narration_issues=["stub"],
+                bundle=SimpleNamespace(
+                    labor_realization=None,
+                    labor_realization_source=LaborRealizationSource.UNSET,
+                    economic_error=["stub"],
+                ),
+                rendered=SimpleNamespace(json_doc={"mode": "partial"}, markdown="# stub\n"),
+            )
+
+        api_main.orchestrate.run_assessment = fake_run
+        payload = {
+            "state": state().model_dump(mode="json"),
+            "report_format": "json",
+        }
+        res = client.post("/api/assessment/run", json=payload)
+        body = res.json()
+        check("B", res.status_code == 200, "valid request is accepted")
+        check("B", captured["called"] == 1 and captured["state_type"] is AssessmentState,
+              "endpoint delegates to pipeline.run_assessment exactly once")
+        check("B", body["mode"] == "partial", "pipeline result is surfaced by API")
+    finally:
+        api_main.orchestrate.run_assessment = orig
+
+    bad = client.post("/api/assessment/run", json={"state": {"sector": "invalid"}})
+    check("C", bad.status_code == 422, "malformed request rejected at API boundary")
+
+
+def case_D_E_F_G_H_I_J(client: TestClient) -> None:
+    print("\nD/E/F/G/H/I/J — FULL/PARTIAL/REFUSED + formats + narration fallback + determinism")
+    install_llm_stub()
+
+    orig_est = orch.estimator.estimate
+    try:
+        orch.estimator.estimate = lambda _s: solution()
+
+        full = post_run(client, base_payload())
+        check("D", full["mode"] == "full", "FULL response returned")
+
+        p_json = base_payload(); p_json["report_format"] = "json"
+        only_json = post_run(client, p_json)
+        check("G", only_json["report_json"] is not None and only_json["report_markdown"] is None,
+              "JSON report format supported")
+
+        p_md = base_payload(); p_md["report_format"] = "markdown"
+        only_md = post_run(client, p_md)
+        check("H", isinstance(only_md["report_markdown"], str) and only_md["report_json"] is None,
+              "Markdown report format supported")
+
+        orig_narrate = orch.narrate_mod.narrate
+        try:
+            def fail_closed(report, bundle=None, **kw):
+                return narrate_mod.NarrationResult(report, used_narration=False,
+                                                   issues=["llm unavailable or malformed: test"])
+
+            orch.narrate_mod.narrate = fail_closed
+            narrated_payload = base_payload()
+            narrated_payload["enable_narration"] = True
+            narrated = post_run(client, narrated_payload)
+            baseline = post_run(client, base_payload())
+            check("I", not narrated["used_narration"], "narration unavailable uses deterministic fallback")
+            check("I", narrated["report_json"] == baseline["report_json"],
+                  "fallback preserves deterministic report JSON")
+        finally:
+            orch.narrate_mod.narrate = orig_narrate
+
+        d1 = post_run(client, base_payload())
+        d2 = post_run(client, base_payload())
+        check("J", d1 == d2, "repeated deterministic request is identical")
+
+        partial_payload = {
+            "state": state().model_dump(mode="json"),
+            "labor_realization": None,
+            "labor_realization_source": LaborRealizationSource.UNSET.value,
+            "report_format": "both",
+        }
+        partial = post_run(client, partial_payload)
+        check("E", partial["mode"] == "partial", "missing labor realization yields PARTIAL")
+        check("R", partial["labor_realization"] is None
+              and partial["labor_realization_source"] == "unset",
+              "no LaborRealization default is invented")
+
+        orch.estimator.estimate = lambda _s: solution(recommended_pattern="", overall_automation=rng(0, 0))
+        refused = post_run(client, base_payload())
+        check("F", refused["mode"] == "refused", "refused estimator state returns REFUSED")
+
+        sections = refused["report_json"].get("sections", [])
+        figure_keys = [f.get("key", "") for s in sections for f in s.get("figures", [])]
+        blocked = ("solution.", "ai_operating.", "impl.", "benefits.", "scores.")
+        check("K/L/M/N/O", all(not k.startswith(blocked) for k in figure_keys),
+              "refused report blocks solution/ai_operating/impl/benefits/scores key families")
+
+        money_keys = [
+            f.get("key")
+            for s in sections
+            for f in s.get("figures", [])
+            if f.get("unit") == "money" and f.get("status") == "known"
+        ]
+        check("P", "problem.loaded_cost" in money_keys,
+              "legitimate monetary assessment facts remain allowed in REFUSED")
+
+        geo_payload = base_payload(geography=None)
+        geo = post_run(client, geo_payload)
+        check("Q", "currency unresolved" in (geo.get("report_markdown") or "").lower(),
+              "no geography/currency fallback is applied")
+    finally:
+        orch.estimator.estimate = orig_est
+
+
+def case_S_T_U_V_W_AC(client: TestClient) -> None:
+    print("\nS/T/U/V/W/AC — compliance, trust boundary, canonical economics, no duplicated pipeline")
+    install_llm_stub()
+
+    seen = {"ok": False}
+    orig_est = orch.estimator.estimate
+    orig_rank = orch.driver_ranking.rank_drivers
+    orig_alt = orch.alternatives_mod.derive
+    orig_sens = orch.sensitivity_mod.sweep
+    orig_run = api_main.orchestrate.run_assessment
+    counts = {"est": 0, "rank": 0, "alt": 0, "sens": 0}
+    canonical = {"ok": False}
+
+    try:
+        def est_inspect(s):
+            counts["est"] += 1
+            seen["ok"] = "HIPAA" in ((s.risk or RiskInputs()).compliance_exposure or [])
+            return solution()
+
+        def rank_count(*a, **k):
+            counts["rank"] += 1
+            return orig_rank(*a, **k)
+
+        def alt_count(*a, **k):
+            counts["alt"] += 1
+            return orig_alt(*a, **k)
+
+        def sens_count(*a, **k):
+            counts["sens"] += 1
+            return orig_sens(*a, **k)
+
+        def run_wrap(*a, **k):
+            run = orig_run(*a, **k)
+            canonical["ok"] = (run.bundle.economics == run.drivers.scores.result)
+            return run
+
+        orch.estimator.estimate = est_inspect
+        orch.driver_ranking.rank_drivers = rank_count
+        orch.alternatives_mod.derive = alt_count
+        orch.sensitivity_mod.sweep = sens_count
+        api_main.orchestrate.run_assessment = run_wrap
+
+        payload = base_payload(risk=RiskInputs(failure_impact="wrong payment",
+                                               compliance_exposure=["HIPAA"]).model_dump(mode="json"))
+        res = post_run(client, payload)
+        check("S", seen["ok"], "compliance requirements are preserved into estimator path")
+        check("U", canonical["ok"], "ReportInput uses canonical EconomicResult (drivers.scores.result)")
+        check("V/W", counts == {"est": 1, "rank": 1, "alt": 1, "sens": 1},
+              f"API does not duplicate analytical stages ({counts})")
+
+        direct = orig_run(
+            state(),
+            labor_realization=LaborRealization.COST_ELIMINATED,
+            labor_realization_source=LaborRealizationSource.USER,
+            enable_narration=False,
+        )
+        via_api = post_run(client, base_payload())
+        check("AC", via_api["report_json"] == direct.rendered.json_doc,
+              "pipeline output exposed by API is unchanged")
+        check("T", "scores" not in state().model_dump(mode="json"),
+              "AssessmentState payload is not polluted with downstream objects")
+    finally:
+        api_main.orchestrate.run_assessment = orig_run
+        orch.estimator.estimate = orig_est
+        orch.driver_ranking.rank_drivers = orig_rank
+        orch.alternatives_mod.derive = orig_alt
+        orch.sensitivity_mod.sweep = orig_sens
+
+
+def case_X_Y_Z_AA_AB(client: TestClient) -> None:
+    print("\nX/Y/Z/AA/AB — interview routes + context semantics + voice route availability")
+
+    orig_run_turn = interview_api.run_turn
+    try:
+        def fake_run_turn(st, message, context=None):
+            if context is None:
+                context = ConversationContext(name="anon")
+            context.note_turn(message)
+            return TurnResult(
+                state=st,
+                context=context,
+                stop=False,
+                status=InterviewStatus.INTERVIEWING,
+                question=f"next:{context.name or 'anon'}",
+                acknowledgment="ok",
+            )
+
+        interview_api.run_turn = fake_run_turn
+
+        start = client.post("/api/interview/start", json={
+            "sector": "document_processing",
+            "problem": "Automate AP",
+            "warm_up": True,
+        })
+        check("X", start.status_code == 200, "existing /api/interview/start still works")
+
+        body1 = start.json()
+        turn = client.post("/api/interview/turn", json={
+            "state": body1["state"],
+            "context": body1["context"],
+            "message": "next msg",
+        })
+        check("Y", turn.status_code == 200, "existing /api/interview/turn still works")
+
+        body2 = turn.json()
+        check("Z", len(body2["context"].get("recent_turns", [])) >= 2,
+              "ConversationContext survives successive turns")
+
+        c1 = ConversationContext(name="A").model_dump(mode="json")
+        c2 = ConversationContext(name="B").model_dump(mode="json")
+        t1 = client.post("/api/interview/turn", json={"state": body1["state"], "context": c1, "message": "m1"}).json()
+        t2 = client.post("/api/interview/turn", json={"state": body1["state"], "context": c2, "message": "m2"}).json()
+        check("AA", t1["question"] != t2["question"],
+              "different contexts remain isolated")
+    finally:
+        interview_api.run_turn = orig_run_turn
+
+    ws_paths = {getattr(r, "path", "") for r in api_main.app.routes}
+    check("AB", "/ws/interview/voice" in ws_paths, "existing voice websocket route remains available")
+
+
+class _FakeWebSocket:
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.sent: list[dict] = []
+        self.accepted = False
+        self.closed = False
+
+    async def accept(self):
+        self.accepted = True
+
+    async def receive(self):
+        return self.messages.pop(0)
+
+    async def send_json(self, value):
+        self.sent.append(value)
+
+    async def close(self):
+        self.closed = True
+
+
+def case_voice_transport_and_cors() -> None:
+    print("\nVOICE/CORS — state/context/transcript wire contract and allowed origins")
+    orig_transcribe = voice_session_mod.transcribe_audio
+    orig_run_turn = voice_session_mod.run_turn
+    orig_audio = voice_api._base64_audio
+    try:
+        def fake_transcribe(audio, **_kw):
+            return ("terminal transcript" if audio == b"terminal"
+                    else "first transcript")
+
+        def fake_run_turn(st, message, context=None):
+            context = context or ConversationContext()
+            context.note_turn(message)
+            terminal = message == "terminal transcript"
+            status = InterviewStatus.READY if terminal else InterviewStatus.INTERVIEWING
+            st.status = status
+            st.complete = terminal
+            return TurnResult(
+                state=st, context=context, status=status, stop=terminal,
+                stop_reason="complete" if terminal else None,
+                question=None if terminal else "next question",
+                acknowledgment="ack",
+            )
+
+        voice_session_mod.transcribe_audio = fake_transcribe
+        voice_session_mod.run_turn = fake_run_turn
+        voice_api._base64_audio = lambda _text: "mock-audio"
+
+        ws = _FakeWebSocket([
+            {"type": "websocket.receive", "bytes": b"before"},
+            {"type": "websocket.receive", "text": json.dumps({"action": "ping"})},
+            {"type": "websocket.receive", "text": json.dumps({"action": "unknown"})},
+            {"type": "websocket.receive", "text": json.dumps({
+                "action": "start", "sector": "document_processing", "problem": "invoice intake"})},
+            {"type": "websocket.receive", "bytes": b"first"},
+            {"type": "websocket.receive", "bytes": b"terminal"},
+            {"type": "websocket.disconnect"},
+        ])
+        asyncio.run(voice_api.voice_interview(ws))
+
+        errors = [m for m in ws.sent if m.get("type") == "error"]
+        turns = [m for m in ws.sent if m.get("type") == "turn"]
+        ready = next(m for m in ws.sent if m.get("type") == "ready")
+        check("voice-A", turns[0]["transcript"] == "first transcript",
+              "successful voice turn returns actual STT transcript")
+        check("voice-B", isinstance(turns[0].get("state"), dict),
+              "voice turn exposes AssessmentState")
+        check("voice-C", isinstance(turns[0].get("context"), dict),
+              "voice turn exposes ConversationContext")
+        check("voice-D", turns[1]["transcript"] == "terminal transcript"
+              and turns[1]["stop"] and isinstance(turns[1]["state"], dict)
+              and isinstance(turns[1]["context"], dict),
+              "terminal turn carries state/context required for assessment submission")
+        check("voice-E", any(m.get("type") == "pong" for m in ws.sent),
+              "ping/pong behavior remains intact")
+        check("voice-F", any(m.get("message") == "start first" for m in errors),
+              "audio-before-start retains error")
+        check("voice-G", any(m.get("message") == "unknown action" for m in errors),
+              "unknown action retains error")
+        check("voice-H", ready.get("state") and ready.get("context") is not None,
+              "ready payload exposes initial state/context")
+    finally:
+        voice_session_mod.transcribe_audio = orig_transcribe
+        voice_session_mod.run_turn = orig_run_turn
+        voice_api._base64_audio = orig_audio
+
+    old = os.environ.get("DEPLOYIQ_ALLOWED_ORIGINS")
+    try:
+        os.environ["DEPLOYIQ_ALLOWED_ORIGINS"] = "https://frontend.example, https://preview.example"
+        configured = importlib.reload(api_main)
+        cors_client = TestClient(configured.app)
+        allowed = cors_client.options("/api/assessment/run", headers={
+            "Origin": "https://frontend.example",
+            "Access-Control-Request-Method": "POST",
+        })
+        denied = cors_client.options("/api/assessment/run", headers={
+            "Origin": "https://arbitrary.example",
+            "Access-Control-Request-Method": "POST",
+        })
+        check("cors-I", allowed.headers.get("access-control-allow-origin") == "https://frontend.example",
+              "CORS allows configured origin for POST")
+        check("cors-J", denied.headers.get("access-control-allow-origin") != "https://arbitrary.example",
+              "CORS does not allow arbitrary origin")
+        os.environ["DEPLOYIQ_ALLOWED_ORIGINS"] = "*"
+        wildcard_rejected = False
+        try:
+            configured._allowed_origins()
+        except RuntimeError:
+            wildcard_rejected = True
+        check("cors-J", wildcard_rejected,
+              "credentialed CORS configuration rejects wildcard origin")
+    finally:
+        if old is None:
+            os.environ.pop("DEPLOYIQ_ALLOWED_ORIGINS", None)
+        else:
+            os.environ["DEPLOYIQ_ALLOWED_ORIGINS"] = old
+        importlib.reload(api_main)
+
+
+def main() -> None:
+    client = TestClient(api_main.app)
+    case_A_B_C(client)
+    case_D_E_F_G_H_I_J(client)
+    case_S_T_U_V_W_AC(client)
+    case_X_Y_Z_AA_AB(client)
+    case_voice_transport_and_cors()
+
+    print()
+    if failures:
+        print(f"{len(failures)} FAILURE(S) / {checks} assertions:")
+        for f in failures:
+            print(f"  - {f}")
+        sys.exit(1)
+    print(f"ALL P7 API CASES PASSED ({checks} assertions)")
+
+
+if __name__ == "__main__":
+    main()

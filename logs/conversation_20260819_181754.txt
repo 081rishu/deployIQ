@@ -1,0 +1,60 @@
+
+============================================================
+SCENARIO: support_standard  (customer_support)
+PROBLEM: we want to automate support tickets
+============================================================
+[turn 0] status=interviewing need=missing
+  AI: Where is the team that handles this process based?
+[turn 1] USER: we handle about 10k tickets a month with 15 agents
+  updated: ['monthly_volume=10000', 'current_headcount=15']
+  status=interviewing need=missing
+  AI: Where is your team based?
+[turn 2] USER: its ticket handling, each takes about 8 minutes, agents earn 600k a year loaded
+  updated: ['avg_time_per_unit_minutes=8', 'fully_loaded_annual_cost=600000']
+  status=interviewing need=missing
+  AI: Where is your team based?
+[turn 3] USER: accuracy needed is around 95 percent
+  updated: ["required_accuracy={'min': 0.95, 'max': 0.95}"]
+  status=uncertain need=missing
+[turn 4] USER: integration would be medium effort, data exists in the ticketing system
+  updated: []
+  status=uncertain need=None
+[turn 5] USER: if the AI gets it wrong it causes customer harm, and we have gdpr constraints
+  updated: []
+  status=uncertain need=None
+FINAL: status=uncertain complete=True
+  stop_reason=already terminated
+  filled_required=True vol=True time=True head=True acc=True int=False risk=False
+RESULT: PASS
+
+============================================================
+SCENARIO: support_ambiguous  (customer_support)
+PROBLEM: we want to automate support
+============================================================
+[turn 0] status=interviewing need=missing
+  AI: Where is your team based?
+[turn 1] USER: we get a lot of tickets, maybe ten thousand a month
+  updated: ['monthly_volume=10000']
+  status=interviewing need=missing
+  AI: Where is your support team based?
+[turn 2] USER: handled by about 15 agents
+  updated: ['current_headcount=15']
+  status=interviewing need=missing
+  AI: Where is your team based?
+[turn 3] USER: accuracy should be high
+  updated: ['required_accuracy=None']
+  status=clarifying need=ambiguous
+  AI: Could you specify what you mean by 'high' accuracy? Are you thinking in terms of a percentage or a specific threshold?
+[turn 4] USER: medium integration effort
+  updated: ['integration_complexity=medium']
+  status=clarifying need=ambiguous
+  AI: Could you clarify what level of accuracy is required for automating support in customer support? Is it closer to 90%, 95%, or another specific level?
+[turn 5] USER: mistakes cause customer harm
+  updated: ['risk.failure_impact=mistakes cause customer harm', 'risk.failure_impact_severity=major']
+  status=clarifying need=ambiguous
+  AI: Could you specify the level of accuracy required for this task, ideally as a percentage?
+FINAL: status=clarifying complete=False
+  stop_reason=None
+  filled_required=True vol=True time=False head=True acc=False int=True risk=True
+RESULT: FAIL
+  FAIL: interview did not reach a terminal state (READY/UNCERTAIN)

@@ -723,3 +723,117 @@ class ReportInput(BaseModel):
             confidence=confidence, labor_realization=labor_realization,
             labor_realization_source=labor_realization_source,
             economic_error=list(economic_error or []))
+
+
+# ---------------------------------------------------------------------------
+# Validation result (spec 14) — the output of report/validate.py.
+#
+# The validator is a FAIL-CLOSED trust boundary: `valid` is False the moment
+# any error is recorded. Errors are conditions that make the report unsafe to
+# emit; warnings are limitations that can be disclosed without invalidating
+# it. The validator never repairs a problem — it reports it.
+# ---------------------------------------------------------------------------
+
+class ValidationSeverity(str, Enum):
+    ERROR = "error"
+    WARNING = "warning"
+
+
+class ValidationIssue(BaseModel):
+    """One finding from the validator. `code` is a stable machine key; the
+    `section` names the report section it belongs to, when applicable."""
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    message: str
+    section: str = ""
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+
+
+class ValidationResult(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+
+    errors: list[ValidationIssue] = Field(default_factory=list)
+    warnings: list[ValidationIssue] = Field(default_factory=list)
+    checked_rules: list[str] = Field(default_factory=list)
+    guard_log: list[str] = Field(default_factory=list)
+
+    @property
+    def valid(self) -> bool:
+        return not self.errors
+
+    def add_error(self, code: str, message: str, section: str = "") -> None:
+        self.errors.append(ValidationIssue(
+            code=code, message=message, section=section,
+            severity=ValidationSeverity.ERROR))
+
+    def add_warning(self, code: str, message: str, section: str = "") -> None:
+        self.warnings.append(ValidationIssue(
+            code=code, message=message, section=section,
+            severity=ValidationSeverity.WARNING))
+
+    def rule_checked(self, name: str) -> None:
+        if name not in self.checked_rules:
+            self.checked_rules.append(name)
+
+    def log_guard(self, entry: str) -> None:
+        self.guard_log.append(entry)
+
+
+# ---------------------------------------------------------------------------
+# Narration contract (spec 6 / P4) — the structured input/output boundary
+# between the deterministic Report and the optional LLM writer.
+#
+# The LLM is a WRITER, never an analyst. It receives NarrationUnit objects that
+# each carry the deterministic source statement it may rewrite, plus the figure
+# tokens it may reference via `{{FIGURE:key}}` placeholders. The deterministic
+# system owns every value; the LLM never emits a raw number that survives.
+# ---------------------------------------------------------------------------
+
+class NarrationUnit(BaseModel):
+    """One deterministic statement offered to the narrator for rewriting.
+
+    `statement_id` is stable and names the source statement exactly, so a
+    proposed rewrite is source-closed (it must reference an existing id).
+    `figure_tokens` are the figure keys the narrator may reference; the actual
+    values stay deterministic.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    section_id: str
+    statement_id: str
+    text: str
+    verbatim_from: Optional[str] = None
+    figure_tokens: list[str] = Field(default_factory=list)
+
+
+class NarrationStatement(BaseModel):
+    """One proposed rewrite. Must name its source and may place figure tokens.
+
+    `text` may contain `{{FIGURE:key}}` placeholders; the values are resolved
+    deterministically, never by the model. It must not contain raw numeric
+    claims, directive language, invented citations, or provenance mutations.
+    """
+    source_statement_id: str
+    text: str
+    figure_tokens: list[str] = Field(default_factory=list)
+
+
+class NarrationSection(BaseModel):
+    section_id: str
+    statements: list[NarrationStatement] = Field(default_factory=list)
+
+
+class NarrationOutput(BaseModel):
+    """The structured JSON the narrator returns, one rewrite per unit."""
+    sections: list[NarrationSection] = Field(default_factory=list)
+
+
+class NarrationInput(BaseModel):
+    """The constrained payload the narrator is offered.
+
+    Derived from the validated deterministic Report (build_narration_input);
+    the LLM never sees raw AssessmentState. Each unit is one deterministic
+    statement plus the figure tokens it may reference.
+    """
+    units: list[NarrationUnit] = Field(default_factory=list)

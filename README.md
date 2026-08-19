@@ -147,15 +147,45 @@ built are listed under "Not built yet" below.
 
 Not built yet (specified, no code):
 
-- The final report (spec 13). Design approved in
-  `docs/deployIQ_final_report_proposed_fix.md`; it is a composition and
-  presentation layer over the frozen pipeline, not another analytical engine.
-- Orchestration: nothing yet runs estimator -> economics -> scoring -> drivers
-  -> alternatives -> sensitivity as one pass and freezes the result.
-- `api/solution.py`, `api/analysis.py`, `api/report.py` — the estimator,
-  analysis and report endpoints.
+- `api/solution.py` — a standalone estimator-only endpoint.
 - The review screen (spec 14, screen 3), where benchmark-vs-user-value choices
   would be resolved.
+
+Built in the API layer:
+
+- `POST /api/assessment/run` — thin adapter over `pipeline.run_assessment(...)`.
+  Input: `AssessmentState` plus orchestration controls (`labor_realization`,
+  optional narration flag/model/temp, and `report_format=json|markdown|both`).
+  Output: pipeline report mode (`full|partial|refused`) and rendered report in
+  JSON and/or Markdown from the existing report renderer.
+- Existing interview endpoints remain unchanged:
+  - `POST /api/interview/start`
+  - `POST /api/interview/turn`
+- Existing voice WebSocket route remains unchanged:
+  - `/ws/interview/voice`
+
+Production frontend configuration:
+
+- Set `DEPLOYIQ_ALLOWED_ORIGINS` to a comma-separated allowlist of HTTPS frontend origins, for example `https://<frontend-host>`.
+- The backend rejects `*` in this setting because credentialed CORS must not allow arbitrary origins.
+- REST uses `https://<backend>/api/...`; voice uses `wss://<backend>/ws/interview/voice`.
+
+Session/context behavior:
+
+- Assessment analysis is request-scoped and stateless server-side.
+- Interview conversation context is client-carried (`ConversationContext`), so
+  same context continues the same conversation and different contexts remain
+  isolated.
+
+Report semantics:
+
+- `full`, `partial`, and `refused` are analytical outcomes returned as normal
+  responses (not coerced into HTTP failures).
+- Narration is optional; if unavailable, deterministic report output is
+  returned unchanged.
+- `refused` reports stay validator-constrained and do not fabricate downstream
+  key families (`solution.*`, `ai_operating.*`, `impl.*`, `benefits.*`,
+  `scores.*`).
 
 ## Validation
 
@@ -166,13 +196,14 @@ the LLM, need no API key, and are deterministic:
 for f in scripts/*_cases.py; do python3 "$f"; done
 ```
 
-Last full run: 435 checks, 0 failures, on CPython 3.12.3 (Linux). The suites
+Last full run: 771 checks, 0 failures. The suites
 stub the OpenAI client, so they exercise the deterministic layers only.
 
 ## Environment variables
 
 ```
 OPENAI_API_KEY=your_key_here
+DEPLOYIQ_ALLOWED_ORIGINS=https://<frontend-host>
 ```
 
 ## Getting started

@@ -33,9 +33,9 @@ Each section records its own STATUS. Summary:
              risk_score,composite,driver_ranking}.py
   10 interview interviewer/{engine,fields}.py          scripts/conversation_test.py
              api/interview.py
-  11 alternatives  NOT BUILT
+  11 alternatives  BUILT
   12 sensitivity   see 8.10 + 9.5 (built differently to the original wording)
-  13 report        NOT BUILT
+  13 report        BUILT
   14 screens       NOT BUILT (frontend deferred)
 
 Known weaknesses are tracked per layer, not buried here:

@@ -2,9 +2,9 @@
 
 Protocol (binary-friendly for a browser mic):
   client -> server   JSON {"action":"start","sector":...,"problem":...}
-  server -> client   JSON {"type":"ready","status":...,"question":...,"audio":<b64 mp3>}
+  server -> client   JSON {"type":"ready","state":...,"context":...,"status":...,"question":...,"audio":<b64 mp3>}
   client -> server   binary frame = user speech audio (e.g. webm/ogg from mic)
-  server -> client   JSON {"type":"turn","transcript":...,"status":...,"question":...,"audio":<b64 mp3>,"stop":bool}
+  server -> client   JSON {"type":"turn","state":...,"context":...,"transcript":...,"status":...,"question":...,"audio":<b64 mp3>,"stop":bool}
 
 The server holds one VoiceSession per websocket connection, so the
 AssessmentState persists across frames for that socket only (still no
@@ -29,6 +29,9 @@ log = get_logger("api.voice")
 
 def _payload(result: TurnResult, extra: dict | None = None) -> dict:
     data: dict = {
+        "state": result.state.model_dump(mode="json"),
+        "context": (result.context.model_dump(mode="json")
+                    if result.context is not None else None),
         "status": result.state.status.value,
         "stop": result.stop,
         "stop_reason": result.stop_reason,
@@ -70,7 +73,10 @@ async def voice_interview(ws: WebSocket) -> None:
                     continue
                 log.info("received audio bytes=%d", len(raw["bytes"]))
                 result = session.respond(raw["bytes"])
-                await ws.send_json(_payload(result, {"type": "turn"}))
+                await ws.send_json(_payload(result, {
+                    "type": "turn",
+                    "transcript": session.last_transcript or "",
+                }))
                 continue
 
             # JSON message = control/start.
