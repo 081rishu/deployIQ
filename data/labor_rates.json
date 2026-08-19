@@ -1,0 +1,119 @@
+{
+  "version": 2,
+  "description": "Labor rates by geography x role. Two KINDS of labor are held here and must never be interchanged: PROCESS labor (the people doing the work being assessed) and IMPLEMENTATION labor (the engineers building the AI solution). Figures are MARKET COMPENSATION, not fully-loaded employer cost — the employer load is applied separately and is currently unresolved.",
+  "_meta": {
+    "no_silent_fallback": "If the geography or role has no entry, the lookup returns UNRESOLVED. Never substitute another geography's or role's rate.",
+    "us_process_labor_note": "US process labor is NOT duplicated here. It lives in data/sector_benchmarks/*.json (US BLS OEWS wages) where it already carries its citation. Duplicating it would risk drift. This file holds India process labor, plus engineering labor for both geographies.",
+    "last_updated": "2026-08-19"
+  },
+
+  "fully_loaded_multiplier": {
+    "status": "unresolved",
+    "min": 1.30,
+    "max": 1.60,
+    "provenance": "assumed",
+    "verification": "unverified",
+    "rationale": "None of the sourced figures below are fully-loaded employer cost; they are cash compensation as reported to salary aggregators. A 1.3x-1.6x India ITES/BPO loading (benefits, employer PF/ESI, facilities, overhead) is commonly cited in industry literature, but NO specific citation has been established. Applying it is an explicit assumption and must be shown as one.",
+    "source": "unsourced — do not present as an industry figure"
+  },
+
+  "entries": [
+    {
+      "rate_id": "IN-CS-AGENT-2026",
+      "geography": "India",
+      "currency": "INR",
+      "labor_kind": "process",
+      "role": "customer_support_agent",
+      "role_category": "entry_level_support",
+      "sector": "customer_support",
+      "compensation_annual": { "low": 171000, "median": 247821, "high": 483000 },
+      "provenance": "sourced",
+      "verification": "primary_document",
+      "source": "Payscale — Average Customer Service Agent Salary in India",
+      "source_url": "https://www.payscale.com/research/IN/Job=Customer_Service_Agent/Salary",
+      "retrieved": "2026-08-19",
+      "sample_basis": "67 salary profiles; page last updated 2025-06-10",
+      "notes": "MARKET CASH COMPENSATION (base + bonus + profit sharing), NOT fully-loaded. Entry-level/generalist agent, the role most applicable to high-volume ticket handling.",
+      "limitations": "Small self-reported sample (n=67) and the underlying page was last refreshed mid-2025. Retrieved directly; the low bound reads 171,000 on the page (an earlier draft of this registry recorded 176,000)."
+    },
+    {
+      "rate_id": "IN-CS-SPECIALIST-2026",
+      "geography": "India",
+      "currency": "INR",
+      "labor_kind": "process",
+      "role": "customer_support_specialist",
+      "role_category": "higher_skill_support",
+      "sector": "customer_support",
+      "compensation_annual": { "low": 426250, "median": 610000, "high": 900000 },
+      "provenance": "sourced",
+      "verification": "search_snippet",
+      "source": "Glassdoor — Customer Support Specialist (India, national)",
+      "source_url": "https://www.glassdoor.co.in/Salaries/customer-support-specialist-salary-SRCH_KO0,27.htm",
+      "retrieved": "2026-08-19",
+      "sample_basis": "~500 salaries, national average",
+      "notes": "For tier-2/escalation roles requiring product or technical depth. Distinct from the generalist agent entry and NOT interchangeable with it.",
+      "limitations": "Glassdoor blocks automated retrieval, so this figure was supplied rather than read from the page in this session. City-level medians run higher (Bangalore/Mumbai/Chennai ~6.5-6.8L vs 6.1L national); city refinement is not modelled."
+    },
+    {
+      "rate_id": "IN-AP-CLERK-2026",
+      "geography": "India",
+      "currency": "INR",
+      "labor_kind": "process",
+      "role": "accounts_payable_clerk",
+      "role_category": "entry_level_finance_ops",
+      "sector": "document_processing",
+      "compensation_annual": { "low": 348103, "median": 588235, "high": 700367 },
+      "provenance": "sourced",
+      "verification": "search_snippet",
+      "source": "ERI SalaryExpert — Accounts Payable Clerk Salary in India",
+      "source_url": "https://www.salaryexpert.com/salary/job/accounts-payable-clerk/india",
+      "retrieved": "2026-08-19",
+      "sample_basis": "Employer + employee survey methodology (ERI); cross-checked against Indeed and Glassdoor",
+      "notes": "ERI used as the median because its methodology is more transparent than ML-predicted aggregator figures, and it sits between the Indeed low (348,103) and the Glassdoor high (700,367) rather than at either extreme.",
+      "limitations": "salaryexpert.com returns HTTP 403 to automated retrieval, so this was not read from the page in this session. The Glassdoor cross-check high is based on n=41, a small sample treated as an upper bound only. The low-to-high spread is unusually wide (2x) and should be treated as genuine uncertainty about the role definition."
+    },
+    {
+      "rate_id": "IN-AIML-ENGINEER-2026",
+      "geography": "India",
+      "currency": "INR",
+      "labor_kind": "implementation",
+      "role": "ai_ml_engineer",
+      "role_category": "engineering_build_labor",
+      "sector": "cross_cutting",
+      "compensation_annual": { "low": 570250, "median": 1040000, "high": 1700000 },
+      "provenance": "sourced",
+      "verification": "search_snippet",
+      "source": "Glassdoor — AI/ML Engineer (India, national)",
+      "source_url": "https://www.glassdoor.co.in/Salaries/ai-ml-engineer-salary-SRCH_KO0%2C14.htm",
+      "retrieved": "2026-08-19",
+      "sample_basis": "~666 salaries, national average",
+      "notes": "IMPLEMENTATION labor — the cost of building and integrating the AI solution, never the cost of the process being automated.",
+      "limitations": "Glassdoor blocks automated retrieval. The 3x low-to-high spread reflects India's real experience-band range (IT-services vs product-company comp); the national median represents no specific company tier."
+    },
+    {
+      "rate_id": "US-ENGINEER-ASSUMED",
+      "geography": "US",
+      "currency": "USD",
+      "labor_kind": "implementation",
+      "role": "software_engineer",
+      "role_category": "engineering_build_labor",
+      "sector": "cross_cutting",
+      "hourly_direct": { "low": 50.0, "median": 70.0, "high": 90.0 },
+      "provenance": "assumed",
+      "verification": "unverified",
+      "source": "assumption — no primary source established for a fully-loaded US engineering rate",
+      "source_url": "",
+      "retrieved": "2026-08-19",
+      "sample_basis": "none",
+      "notes": "Retained so US implementation costing works, but it is an assumption and is tagged as one. Stated as an hourly figure already inclusive of load, so the fully-loaded multiplier is NOT applied to it.",
+      "limitations": "Unsourced. Replace with a real contractor rate card or the organisation's own loaded cost before this appears in a report."
+    }
+  ],
+
+  "not_yet_sourced": [
+    "US process labor — comes from the sector benchmark packs (US BLS OEWS), not this file",
+    "A citable India fully-loaded employer-cost multiplier",
+    "City-level India breakdowns below national average",
+    "Cloud/infrastructure hosting costs for either geography"
+  ]
+}

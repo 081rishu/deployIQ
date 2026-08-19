@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "description": "Versioned AI/API pricing records (E2). A price may only be applied when the SELECTED architecture actually uses that provider/service. Missing pricing is ABSENT, never zero and never a stale substitute.",
+  "records": [
+    {
+      "pricing_id": "openai_gpt5_mini_v1",
+      "provider": "OpenAI",
+      "service": "gpt-5-mini",
+      "unit": "per_1m_tokens",
+      "input_price": 0.25,
+      "output_price": 2.00,
+      "currency": "USD",
+      "geography": "global (list price)",
+      "effective_date": "2026-08",
+      "source": "OpenAI API pricing page",
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "last_verified": "2026-08-18",
+      "provenance": "sourced",
+      "notes": "Standard tier. A cost-optimised model appropriate for high-volume classification and drafting; chosen as the default for ticket-scale workloads rather than a frontier model."
+    },
+    {
+      "pricing_id": "openai_gpt5_v1",
+      "provider": "OpenAI",
+      "service": "gpt-5",
+      "unit": "per_1m_tokens",
+      "input_price": 1.25,
+      "output_price": 10.00,
+      "currency": "USD",
+      "geography": "global (list price)",
+      "effective_date": "2026-08",
+      "source": "OpenAI API pricing page",
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "last_verified": "2026-08-18",
+      "provenance": "sourced",
+      "notes": "Standard tier frontier model; 5x the input cost and 5x the output cost of gpt-5-mini."
+    },
+    {
+      "pricing_id": "aws_textract_expense_v1",
+      "provider": "Amazon Web Services",
+      "service": "Textract AnalyzeExpense",
+      "unit": "per_page",
+      "input_price": 0.01,
+      "output_price": 0.0,
+      "currency": "USD",
+      "geography": "US (us-west-2 list price)",
+      "effective_date": "2026-08",
+      "source": "Amazon Textract pricing, first 1M pages/month tier",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "last_verified": "2026-08-18",
+      "provenance": "sourced",
+      "notes": "Drops to $0.008/page beyond 1M pages/month. Excludes storage, egress and orchestration."
+    },
+    {
+      "pricing_id": "aws_textract_ocr_v1",
+      "provider": "Amazon Web Services",
+      "service": "Textract DetectDocumentText",
+      "unit": "per_page",
+      "input_price": 0.0015,
+      "output_price": 0.0,
+      "currency": "USD",
+      "geography": "US (us-west-2 list price)",
+      "effective_date": "2026-08",
+      "source": "Amazon Textract pricing, first 1M pages/month tier",
+      "source_url": "https://aws.amazon.com/textract/pricing/",
+      "last_verified": "2026-08-18",
+      "provenance": "sourced",
+      "notes": "Plain OCR only, no structured extraction."
+    }
+  ],
+  "token_usage_assumptions": {
+    "description": "Token usage per unit is NOT sourced. These are explicit assumption ranges and must appear in sensitivity analysis.",
+    "customer_support_ticket": {
+      "input_tokens_min": 1500,
+      "input_tokens_max": 6000,
+      "output_tokens_min": 150,
+      "output_tokens_max": 600,
+      "provenance": "assumed",
+      "rationale": "a ticket prompt carries the thread, some knowledge context and instructions; the reply is short. The wide range reflects how much context a given deployment retrieves."
+    }
+  }
+}

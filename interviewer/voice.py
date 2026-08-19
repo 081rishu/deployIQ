@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from interviewer.conversation import ConversationContext
 from interviewer.engine import TurnResult, run_turn
 from lib.logging_config import get_logger
 from llm.stt import transcribe_audio
@@ -51,15 +52,21 @@ class VoiceSession:
         result = session.respond(audio_bytes)  # transcribe -> think -> speak
     """
 
-    def __init__(self) -> None:
+    def __init__(self, warm_up: bool = True) -> None:
         self.state: Optional[AssessmentState] = None
+        # Conversation context lives beside the state for the life of the
+        # socket. Voice implements no assessment logic of its own — it holds
+        # the same two objects the text path ships back and forth.
+        self.context: Optional[ConversationContext] = (
+            ConversationContext() if warm_up else None)
 
     def start(self, sector, problem: str, transcriptions_language: str = "en") -> TurnResult:
         from schemas.assessment_state import AssessmentState as AS
 
         self.state = AS(sector=sector, problem=problem)
         log.info("session start sector=%s problem=%r", sector.value if hasattr(sector, 'value') else sector, problem)
-        result = run_turn(self.state, problem)
+        result = run_turn(self.state, problem, self.context)
+        self.context = result.context
         return result
 
     def respond(self, audio: bytes, *, language: str = "en", filename: str | None = None) -> TurnResult:
@@ -75,7 +82,8 @@ class VoiceSession:
         log.info("respond audio_bytes=%d filename=%s", len(audio) if isinstance(audio, (bytes, bytearray)) else -1, name)
         transcript = transcribe_audio(audio, language=language, filename=name)
         log.info("transcript=%r", transcript)
-        result = run_turn(self.state, transcript)
+        result = run_turn(self.state, transcript, self.context)
+        self.context = result.context
         return result
 
     def speech_for(self, result: TurnResult) -> bytes:

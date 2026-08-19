@@ -23,7 +23,9 @@ implementation, the bottleneck is deploy friction and context
 switching, not raw compute. A single Python process keeps the LLM
 calls and the deterministic math in one language, which removes a
 category of cross-language type drift. The venv already exists at
-`.venv/` (Python 3.13). Nothing in the MVP scope needs persistence
+`.venv/` (Python 3.13 on the development machine; the spec requires
+3.12+ and the acceptance suites are validated on 3.12 as well). Nothing
+in the MVP scope needs persistence
 across sessions or users.
 
 
@@ -67,10 +69,24 @@ Output: score (0-100) + interpretation band. No LLM calls anywhere in
 this layer — these are the modules that must be independently
 testable with hand-computed inputs before they touch the UI.
 
-3.4 /calc/cost_engine.py
-Implements the labor baseline (volume x time x cost), staged
-implementation costing with buy/build per stage, and the benchmark
-cross-check (comparison only, not additive — see spec v3 section 5).
+3.4 /calc/ — the Economic Engine (spec section 8)
+Pure Python, no LLM. Split so each piece is independently unit-testable:
+
+  models.py          money/interval types, provenance-tagged cost lines
+  labor.py           8.1 task-level and workforce-level labor cost, and the
+                     consistency check between the two formulations
+  current_state.py   8.2 current annual cost
+  ai_state.py        8.3/8.4 per-task AI economics, residual labor, human
+                     review, AI annual operating cost
+  implementation.py  8.5 staged buy/build costing from the estimator's bands
+  lifecycle.py       8.6/8.7 first-year cost, unit economics on valid output,
+                     savings, payback (suppressed when non-positive)
+  benchmark_check.py 8.8 cross-check against the sector pack (comparison
+                     only, never additive — prevents double-counting)
+  sensitivity.py     8.10 deterministic recalculation interface for the
+                     Decision Driver module
+  engine.py          orchestrator: AssessmentState + SolutionEstimate ->
+                     EconomicResult
 
 3.5 /calc/driver_ranking.py
 Sensitivity-weighted ranking function that selects which facts become

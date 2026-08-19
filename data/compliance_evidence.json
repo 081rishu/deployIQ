@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "description": "Compliance evidence, in two SEPARATE registers. Register A holds attestations for deployIQ's OWN vendor stack (product-level compliance). Register B holds attestations for the Solution Registry's implementations — the evidence the estimator needs before an architecture may be selected on compliance grounds. They answer different questions and are deliberately not merged.",
+  "_meta": {
+    "evidence_type_rule": "Every record here is a VENDOR-PUBLISHED attestation retrieved from the vendor's own page. That is not independent verification and is not compliance advice. The distinction is preserved in `evidence_type` and must not be flattened into 'verified'.",
+    "registry_binding_rule": "An attestation may only back a Solution Registry compliance claim when the registry entry ACTUALLY USES that vendor. An attestation for a vendor we merely reference for pricing binds nothing.",
+    "last_updated": "2026-08-19"
+  },
+
+  "product_vendor_attestations": [
+    {
+      "evidence_id": "att_anthropic_2026",
+      "vendor": "Anthropic",
+      "used_for": "LLM calls, IF the product is moved to the Anthropic API",
+      "in_current_stack": false,
+      "certifications": [
+        "SOC 2 Type I & Type II",
+        "ISO 27001:2022 (Information Security Management)",
+        "ISO/IEC 42001:2023 (AI Management Systems)",
+        "HIPAA-ready configuration (BAA available)"
+      ],
+      "evidence_type": "vendor_published_attestation",
+      "source": "Anthropic Privacy Center — What certifications has Anthropic obtained?",
+      "source_url": "https://privacy.claude.com/en/articles/10015870-what-certifications-has-anthropic-obtained",
+      "trust_portal": "https://trust.anthropic.com/",
+      "retrieved": "2026-08-19",
+      "verification": "primary_document",
+      "notes": "Retrieved and read directly; the certification list matches the vendor page exactly. IMPORTANT: this project's LLM client is llm/openai_client.py (OpenAI), so this attestation currently binds nothing in the stack. Retained because the supplied evidence file named Anthropic and the product may move.",
+      "limitations": "Vendor-published. The underlying SOC 2 report was not retrieved. GDPR status was not confirmed from an Anthropic-owned page."
+    },
+    {
+      "evidence_id": "att_vercel_2026",
+      "vendor": "Vercel",
+      "used_for": "Hosting/deployment, IF a hosted frontend is introduced",
+      "in_current_stack": false,
+      "certifications": [
+        "SOC 2 Type 2 (Security, Confidentiality, Availability)",
+        "ISO 27001:2022",
+        "GDPR transfer mechanism",
+        "HIPAA",
+        "PCI DSS"
+      ],
+      "evidence_type": "vendor_published_attestation",
+      "source": "Vercel — Security & Compliance",
+      "source_url": "https://vercel.com/docs/security/compliance",
+      "trust_portal": "https://security.vercel.com/",
+      "retrieved": "2026-08-19",
+      "verification": "search_snippet",
+      "notes": "NOT in this stack: ARCHITECTURE.txt specifies FastAPI with no frontend and no hosting layer, and there is no Next.js or Vercel configuration in the repository. Recorded for the future, binding nothing today.",
+      "limitations": "Vendor-published; the SOC 2 report itself is gated behind a request flow."
+    }
+  ],
+
+  "registry_implementation_attestations": [],
+
+  "registry_gap_note": "EMPTY, and that is the honest state. The Solution Registry's implementations (n8n, Make, Zapier, managed_ai, rag_managed, and the custom builds) have no compliance attestation on file, so every ComplianceClaim on them remains UNKNOWN and no architecture can currently be selected on compliance grounds. Filling this requires an attestation per implementation and standard — a SOC 2 report, HIPAA BAA, ISO certificate or DPA — with scope and date. The product-vendor attestations above do NOT fill this gap: they describe deployIQ's own vendors, not the platforms a customer would build on."
+}

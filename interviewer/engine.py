@@ -23,12 +23,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+
+from pydantic import BaseModel
 from enum import Enum
 from typing import Any, Optional
 
+from interviewer.conversation import (
+    ConversationContext,
+    Phase,
+    opening_prompt,
+    transition_hint,
+    warmup_prompt,
+)
 from interviewer.fields import (
     FIELDS,
     FieldSpec,
+    Tier,
     ValueType,
     get_field,
 )
@@ -46,6 +56,9 @@ log = get_logger("interviewer.engine")
 
 MAX_ATTEMPTS_PER_FIELD = 3
 MAX_QUESTIONS = 12
+# Tier-2 questions are asked only while this much of the budget remains, so
+# enrichment can never crowd out a clarification on a Tier-1 answer.
+TIER2_BUDGET_RESERVE = 3
 
 
 class NeedType(str, Enum):
@@ -79,6 +92,7 @@ class Need:
 @dataclass
 class TurnResult:
     state: AssessmentState
+    context: Optional[ConversationContext] = None
     updated_fields: list[ExtractedUpdate] = field(default_factory=list)
     question: Optional[str] = None
     acknowledgment: Optional[str] = None
@@ -87,6 +101,11 @@ class TurnResult:
     stop_reason: Optional[str] = None
     need_type: Optional[NeedType] = None
     next_field: Optional[str] = None
+    phase: Optional[str] = None
+    # Tier-2 fields never established, reported at termination so the user
+    # learns what would have improved the assessment (fix spec 5/17).
+    uncollected_tier2: list[str] = field(default_factory=list)
+    completion_statement: str = ""
 
 
 def _field_registry_json(sector: Sector) -> str:
@@ -101,6 +120,10 @@ def _field_registry_json(sector: Sector) -> str:
         t = f.value_type.value
         if f.value_type == ValueType.EFFORT:
             t = "string (one of: " + ", ".join(_band_members()) + ")"
+        elif f.value_type == ValueType.READINESS:
+            t = "string (one of: none, minimal, partial, good, excellent)"
+        elif f.value_type == ValueType.SEVERITY:
+            t = "string (one of: negligible, minor, moderate, major, severe)"
         rows.append({
             "key": f.key,
             "label": f.label,
@@ -112,13 +135,35 @@ def _field_registry_json(sector: Sector) -> str:
     return json.dumps(rows, indent=2)
 
 
+def _render(value: Any) -> Any:
+    """Render a stored value for the LLM prompt.
+
+    Ranges are shown as "10000-15000" rather than a nested object: the model
+    only needs to know what is already answered, and a point range reads as a
+    single number so it never looks like an invented spread.
+    """
+    from schemas.assessment_state import RangeEstimate
+
+    if isinstance(value, RangeEstimate):
+        if value.min == value.max:
+            return value.min
+        return f"{value.min:g}-{value.max:g}"
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, list):
+        return [_render(v) for v in value]
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    return value
+
+
 def _current_values(state: AssessmentState) -> dict[str, Any]:
     """Current known values keyed by field, for the LLM context."""
     known = {}
     for f in FIELDS:
         v = state.get_value(f.key)
         if v is not None and v != "" and v != []:
-            known[f.key] = v
+            known[f.key] = _render(v)
     known["sector"] = state.sector.value
     return known
 
@@ -138,6 +183,10 @@ def _extract(state: AssessmentState, message: str) -> list[ExtractedUpdate]:
         "- value_type 'number'/'int'/'range': parse numeric. If the user gives "
         "a single value where a range is expected, set min=max=that value.\n"
         "- value_type 'effort': output exactly one of small/medium/large.\n"
+        "- value_type 'readiness'/'severity': output exactly one of the listed "
+        "values. Classify from whatever the user described — these are usually "
+        "inferable from an answer given to another question, so fill them "
+        "whenever the message supports it rather than waiting to be asked.\n"
         "- value_type 'string_list': output a list of strings.\n"
         "- provenance: 'user_provided' if the user states a concrete number or "
         "fact in their message — even if phrased casually (e.g. \"about 10k "
@@ -214,10 +263,10 @@ def _apply_updates(state: AssessmentState, updates: list[ExtractedUpdate]) -> li
         f = get_field(u.field)
         if not f:
             continue
-        meta = state.get_meta(u.field)
-        meta.attempts += 1
-
-        has_value = u.value is not None or u.provenance == Provenance.USER_PROVIDED
+        # NOTE: attempts counts how many times the interviewer ASKED about a
+        # field (incremented in run_turn), not how many times extraction
+        # touched it — a volunteered fact must not burn an attempt.
+        has_value = u.value is not None and u.value != "" and u.value != []
 
         # Resolution from quality flags (deterministic).
         if u.contradiction:
@@ -237,10 +286,11 @@ def _apply_updates(state: AssessmentState, updates: list[ExtractedUpdate]) -> li
         elif u.low_confidence:
             state.set_resolution(u.field, FieldResolution.LOW_CONFIDENCE,
                                  reason="answer was rough/unreliable")
-        elif u.value is not None or u.provenance == Provenance.USER_PROVIDED:
+        elif has_value:
             state.set_resolution(u.field, FieldResolution.RESOLVED)
 
-        # Store value whenever a usable one was provided.
+        # Store only a usable value — a null/empty extraction must never
+        # overwrite a value already collected on an earlier turn.
         if has_value:
             state.set_value(u.field, u.value)
             state.tag(u.field, u.provenance)
@@ -278,6 +328,20 @@ def _need_score(f: FieldSpec, need_type: NeedType) -> float:
     if f.required_for_completion:
         base += 10
     return base + bonus[need_type]
+
+
+def _tier1_complete(state: AssessmentState) -> bool:
+    """Every chased, non-benchmark Tier-1 field is resolved."""
+    from interviewer.fields import fields_for_sector
+
+    for f in fields_for_sector(state.sector):
+        if f.tier != Tier.TIER_1 or not f.analysis_relevant:
+            continue
+        if f.benchmark_substitutable:
+            continue
+        if not _resolved(state, f):
+            return False
+    return True
 
 
 def select_next_need(state: AssessmentState) -> Optional[Need]:
@@ -326,7 +390,8 @@ def _minimum_sufficient_reached(state: AssessmentState) -> bool:
     return True
 
 
-def _generate_question(state: AssessmentState, need: Need, last_message: str) -> dict[str, Any]:
+def _generate_question(state: AssessmentState, need: Need, last_message: str,
+                       transition: Optional[str] = None) -> dict[str, Any]:
     """Question-generation call: phrase ONE natural question for the need.
 
     For CLARIFYING needs, ask a targeted follow-up on the same field instead
@@ -353,6 +418,8 @@ def _generate_question(state: AssessmentState, need: Need, last_message: str) ->
         "- Return ONLY JSON with keys: 'acknowledgment' (optional short "
         "acknowledgement of the last answer), 'question' (the single question)."
     )
+    if transition:
+        system += "\n\nTRANSITION: " + transition
     user = (
         f"Current state:\n{json.dumps(_current_values(state), indent=2)}\n\n"
         f"Last user message:\n\"{last_message}\"\n\n"
@@ -361,12 +428,163 @@ def _generate_question(state: AssessmentState, need: Need, last_message: str) ->
     return complete_json(system, user)
 
 
-def run_turn(state: AssessmentState, user_message: str) -> TurnResult:
+def _extract_name(message: str) -> Optional[str]:
+    """Pull a name out of a warm-up reply. Deliberately conservative.
+
+    This is conversational metadata only — it is stored on the
+    ConversationContext and never reaches AssessmentState, so a wrong guess
+    costs a slightly awkward greeting and nothing else.
+    """
+    import re
+    text = message.strip()
+    for pat in (r"\bI'?m\s+([A-Z][a-z]+)", r"\bmy name is\s+([A-Z][a-z]+)",
+                r"\bthis is\s+([A-Z][a-z]+)", r"^([A-Z][a-z]+)[.,!]?$"):
+        m = re.search(pat, text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _known_summary(state: AssessmentState) -> str:
+    known = _current_values(state)
+    known.pop("sector", None)
+    if not known:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in list(known.items())[:6])
+
+
+# Tier-2 fields grouped for a readable closing statement, in the words a
+# person would use rather than field labels.
+_TIER2_PHRASES = {
+    "annual_tooling_cost": "current tooling cost",
+    "monthly_tooling_cost": "current tooling cost",
+    "error_rate": "current rework rate",
+    "rework_time_per_error_minutes": "rework effort",
+    "annual_other_direct_cost": "other direct operating costs",
+    "current_quality_metric": "current quality rate",
+    "current_quality_value": "current quality rate",
+    "risk.compliance_exposure": "compliance requirements",
+    "fully_loaded_annual_cost": "fully loaded staff cost",
+    "fraction_time_on_process": "share of time spent on this process",
+    "existing_data": "what data already exists",
+    "integration_complexity": "your own view of integration complexity",
+    "risk.failure_impact_severity": "how severe a wrong output would be",
+}
+
+
+def completion_statement(state: AssessmentState, status: InterviewStatus) -> str:
+    """A plain closing sentence naming what could not be established.
+
+    Transparency at the point the user can still do something about it: the
+    ABSENT lines otherwise only surface deep inside the report.
+    """
+    missing = uncollected_tier2(state, as_phrases=True)
+    if status == InterviewStatus.UNCERTAIN:
+        head = "The assessment is incomplete."
+    else:
+        head = "Your assessment is complete."
+    if not missing:
+        return f"{head} Every input we look for was established."
+    shown, overflow = missing[:4], len(missing) - 4
+    if len(shown) == 1:
+        listed = shown[0]
+    elif len(shown) == 2:
+        listed = f"{shown[0]} and {shown[1]}"
+    else:
+        listed = ", ".join(shown[:-1]) + f" and {shown[-1]}"
+    if overflow > 0:
+        listed += f", plus {overflow} other input{'s' if overflow > 1 else ''}"
+    tail = ("that was" if len(missing) == 1 else "those were")
+    return (f"{head} We couldn't establish {listed}, so {tail} excluded from "
+            f"the analysis rather than estimated.")
+
+
+def uncollected_tier2(state: AssessmentState, as_phrases: bool = False) -> list[str]:
+    """Tier-2 fields that were never filled (fix spec 5/17).
+
+    Reported at termination so the user learns what would have improved the
+    assessment, rather than the gap only surfacing as an ABSENT line much
+    later in the report.
+    """
+    from interviewer.fields import fields_for_sector
+    out = []
+    for f in fields_for_sector(state.sector):
+        if f.tier != Tier.TIER_2:
+            continue
+        v = state.get_value(f.key)
+        if v is None or v == "" or v == []:
+            out.append(_TIER2_PHRASES.get(f.key, f.label) if as_phrases else f.label)
+    # De-duplicate phrases (several fields map to one human phrase) while
+    # keeping order.
+    seen, unique = set(), []
+    for item in out:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def _warmup_turn(
+    state: AssessmentState, context: ConversationContext, user_message: str,
+) -> Optional[TurnResult]:
+    """Run a warm-up turn, or return None if warm-up is over.
+
+    Facts volunteered during warm-up are extracted exactly as in discovery —
+    someone who opens with "we're a BPO in India handling 5,000 tickets a
+    month" should never be asked those things again.
+    """
+    context.note_turn(user_message)
+
+    if context.warmup_turns == 0 and not user_message.strip():
+        context.warmup_turns = 1
+        q = complete_json(opening_prompt(), "Begin the conversation.")
+        return TurnResult(state=state, context=context, question=q.get("question"),
+                          acknowledgment=q.get("acknowledgment"),
+                          status=InterviewStatus.INTERVIEWING,
+                          phase=Phase.WARMUP.value)
+
+    # Opportunistic extraction: warm-up answers can carry real facts.
+    applied = _apply_updates(state, _extract(state, user_message))
+    if context.name is None:
+        context.name = _extract_name(user_message)
+
+    facts = len([f for f in FIELDS if state.get_value(f.key) not in (None, "", [])])
+    context.warmup_turns += 1
+
+    if not context.should_warm_up(facts):
+        context.complete_warmup()
+        return None
+
+    q = complete_json(warmup_prompt(context, _known_summary(state)),
+                      f"The user just said: \"{user_message}\"")
+    return TurnResult(state=state, context=context, updated_fields=applied,
+                      question=q.get("question"),
+                      acknowledgment=q.get("acknowledgment"),
+                      status=InterviewStatus.INTERVIEWING,
+                      phase=Phase.WARMUP.value)
+
+
+def run_turn(state: AssessmentState, user_message: str,
+             context: Optional[ConversationContext] = None) -> TurnResult:
     """Run one interviewer turn on the given state + latest user message."""
+    # A caller that does not manage ConversationContext gets NO warm-up. A
+    # fresh context per turn would otherwise reset warmup_turns every call and
+    # loop the greeting forever — the warm-up is opt-in for callers that
+    # actually ship the context back.
+    if context is None:
+        context = ConversationContext(warmup_completed=True, phase=Phase.DISCOVERY)
     if state.complete or state.status in (InterviewStatus.READY, InterviewStatus.UNCERTAIN):
         log.info("turn skipped: already terminated (status=%s)", state.status.value)
-        return TurnResult(state=state, stop=True, status=state.status,
-                          stop_reason="already terminated")
+        return TurnResult(state=state, context=context, stop=True,
+                          status=state.status, stop_reason="already terminated")
+
+    # Phase 1: warm up. Deterministic need selection is untouched — warm-up
+    # only decides TONE and when to start, never which field is asked.
+    if not context.warmup_completed:
+        warm = _warmup_turn(state, context, user_message)
+        if warm is not None:
+            state.turn_count += 1
+            return warm
 
     state.turn_count += 1
     log.info("turn=%d sector=%s msg=%r", state.turn_count, state.sector.value, user_message)
@@ -380,26 +598,40 @@ def run_turn(state: AssessmentState, user_message: str) -> TurnResult:
                   [(u.field, u.value, u.provenance.value) for u in applied])
 
     # 2. Select the highest-value unresolved need (deterministic).
+    #    `need.attempts` is how many times we have ALREADY asked about this
+    #    field; it is incremented in step 4, when we actually ask again.
     need = select_next_need(state)
     if need:
-        # A CLARIFYING need that the user keeps failing to resolve must grow
-        # attempts so it eventually reaches UNCERTAIN instead of looping.
-        if need.need_type != NeedType.MISSING:
-            state.get_meta(need.field.key).attempts += 1
-            need.attempts = state.get_meta(need.field.key).attempts
-        log.info("turn=%d need=%s type=%s attempts=%d", state.turn_count,
+        log.info("turn=%d need=%s type=%s prior_attempts=%d", state.turn_count,
                  need.field.key, need.need_type.value, need.attempts)
     else:
         log.info("turn=%d no unresolved need", state.turn_count)
 
     # 3. Determine the state.
-    if need is None or _minimum_sufficient_reached(state):
+    #
+    # Tier 1 is the completion gate. Once it is satisfied we keep going ONLY
+    # while budget remains and only for Tier-2 enrichment — a user with time
+    # gets asked about rework cost and current quality; a user without it
+    # finishes, and those fields are reported as explicitly uncollected rather
+    # than guessed (fix spec 5/11).
+    tier1_done = _tier1_complete(state)
+    budget_left = state.turn_count < (MAX_QUESTIONS - TIER2_BUDGET_RESERVE)
+    if tier1_done and need is not None and need.field.tier != Tier.TIER_1:
+        if not budget_left:
+            need = None
+
+    if need is None or (tier1_done and not budget_left):
         state.complete = True
         state.status = InterviewStatus.READY
         log.info("turn=%d -> READY (minimum sufficient state)", state.turn_count)
-        return TurnResult(state=state, updated_fields=applied, stop=True,
-                          status=InterviewStatus.READY,
-                          stop_reason="minimum sufficient state reached")
+        context.phase = Phase.DONE
+        return TurnResult(state=state, context=context, updated_fields=applied,
+                          stop=True, status=InterviewStatus.READY,
+                          stop_reason="minimum sufficient state reached",
+                          phase=Phase.DONE.value,
+                          uncollected_tier2=uncollected_tier2(state),
+                          completion_statement=completion_statement(
+                              state, InterviewStatus.READY))
 
     if need.attempts >= MAX_ATTEMPTS_PER_FIELD:
         state.complete = True
@@ -409,8 +641,13 @@ def run_turn(state: AssessmentState, user_message: str) -> TurnResult:
         return TurnResult(state=state, updated_fields=applied, stop=True,
                           status=InterviewStatus.UNCERTAIN,
                           stop_reason=f"could not obtain reliable value for "
-                                      f"'{need.field.key}' after {MAX_ATTEMPTS_PER_FIELD} attempts",
-                          need_type=need.need_type, next_field=need.field.key)
+                                      f"'{need.field.key}' after "
+                                      f"{MAX_ATTEMPTS_PER_FIELD} attempts",
+                          need_type=need.need_type, next_field=need.field.key,
+                          context=context, phase=Phase.DONE.value,
+                          uncollected_tier2=uncollected_tier2(state),
+                          completion_statement=completion_statement(
+                              state, InterviewStatus.UNCERTAIN))
 
     if state.turn_count >= MAX_QUESTIONS:
         state.complete = True
@@ -419,7 +656,11 @@ def run_turn(state: AssessmentState, user_message: str) -> TurnResult:
         return TurnResult(state=state, updated_fields=applied, stop=True,
                           status=InterviewStatus.UNCERTAIN,
                           stop_reason=f"question cap ({MAX_QUESTIONS}) reached",
-                          need_type=need.need_type, next_field=need.field.key)
+                          need_type=need.need_type, next_field=need.field.key,
+                          context=context, phase=Phase.DONE.value,
+                          uncollected_tier2=uncollected_tier2(state),
+                          completion_statement=completion_statement(
+                              state, InterviewStatus.UNCERTAIN))
 
     if need.need_type == NeedType.MISSING:
         state.status = InterviewStatus.INTERVIEWING
@@ -427,10 +668,24 @@ def run_turn(state: AssessmentState, user_message: str) -> TurnResult:
         state.status = InterviewStatus.CLARIFYING
     log.info("turn=%d -> %s (field=%s)", state.turn_count, state.status.value, need.field.key)
 
-    # 4. Phrase the question for the chosen need (LLM = language only).
-    q = _generate_question(state, need, user_message)
+    # 4. We are about to ask about this field — that is one attempt. Counting
+    #    it here (rather than on extraction) means MAX_ATTEMPTS_PER_FIELD is
+    #    exactly "asked N times and still unresolved" (spec 10.6).
+    meta = state.get_meta(need.field.key)
+    meta.attempts += 1
+    need.attempts = meta.attempts
+
+    # 5. Phrase the question for the chosen need (LLM = language only).
+    just_transitioned = context.phase == Phase.DISCOVERY and state.turn_count <= 3
+    q = _generate_question(state, need, user_message,
+                           transition=(transition_hint(context, need.field.label)
+                                       if just_transitioned else None))
+    context.phase = (Phase.CLARIFICATION if need.need_type != NeedType.MISSING
+                     else Phase.DISCOVERY)
     return TurnResult(
         state=state,
+        context=context,
+        phase=context.phase.value,
         updated_fields=applied,
         question=q.get("question"),
         acknowledgment=q.get("acknowledgment"),

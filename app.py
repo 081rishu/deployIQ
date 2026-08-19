@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from interviewer.conversation import ConversationContext
 from interviewer.engine import run_turn
 from schemas.assessment_state import AssessmentState, Sector
 
@@ -24,6 +25,8 @@ def _init_state() -> None:
         st.session_state.state = None
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "context" not in st.session_state:
+        st.session_state.context = ConversationContext()
 
 
 def _start(sector: Sector, problem: str) -> None:
@@ -35,8 +38,9 @@ def _start(sector: Sector, problem: str) -> None:
 
 
 def _run(state: AssessmentState, message: str) -> None:
-    result = run_turn(state, message)
+    result = run_turn(state, message, st.session_state.context)
     st.session_state.state = result.state
+    st.session_state.context = result.context
     ack = result.acknowledgment or ""
     q = result.question or ""
     st.session_state.messages.append(("assistant", (ack + " " + q).strip()))

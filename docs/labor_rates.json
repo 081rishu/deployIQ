@@ -1,0 +1,109 @@
+{
+  "_meta": {
+    "purpose": "Labor cost lookup by geography x role, used by costEngine.ts for the labor baseline (volume x time x labor_cost). Cross-cutting across sector benchmark packs, not sector-specific.",
+    "provenance_tag_if_used_unmodified": "sourced",
+    "provenance_tag_if_user_overrides": "user_provided",
+    "geographies_covered": ["IN"],
+    "geographies_explicitly_not_covered": ["US", "all others"],
+    "no_silent_fallback": "If geography is not IN, or role is not found for the given geography, the lookup must return null/not-found. costEngine.ts must not substitute an IN or any other rate silently - the field should surface as 'assumed' with a visible flag, or block until the user provides a value.",
+    "last_updated": "2026-08-19",
+    "currency_note": "All figures in INR (annual, fully-loaded is NOT implied by these figures - see notes per entry; most public salary data is base/total-cash pay, not employer fully-loaded cost including benefits/overhead. Fully-loaded multiplier applied in costEngine.ts, not baked in here - see _meta.fully_loaded_multiplier_todo)."
+  },
+
+  "fully_loaded_multiplier_todo": "[TBD] - None of the sourced figures below are 'fully loaded cost' (they are cash comp as reported to salary aggregators). A standard India ITES/BPO fully-loaded multiplier (benefits, employer PF/ESI contributions, facilities, overhead) is commonly cited in the 1.3x-1.6x range in industry literature, but this spec has not sourced a specific citation for that multiplier yet. Do not hardcode a multiplier without a source - flag it as an assumed adjustment in the UI if applied.",
+
+  "entries": [
+    {
+      "id": "IN-CS-AGENT-2026",
+      "geography": "IN",
+      "role": "customer_support_agent",
+      "role_category": "entry_level_support",
+      "sector": "customer_support",
+      "annual_cost_inr": { "low": 176000, "median": 247821, "high": 483000 },
+      "hourly_cost_inr_approx": 119,
+      "sample_basis": "Survey-based (base + bonus + profit sharing breakdown)",
+      "source": {
+        "name": "Payscale - Average Customer Service Agent Salary in India",
+        "url": "https://www.payscale.com/research/IN/Job=Customer_Service_Agent/Salary",
+        "retrieved": "2026-08-19"
+      },
+      "cross_check": {
+        "name": "Glassdoor - Customer Service Representative (India)",
+        "url": "https://www.glassdoor.co.in/Salaries/customer-service-representative-salary-SRCH_KO0,31.htm",
+        "retrieved": "2026-08-19",
+        "note": "Glassdoor's India dataset for this role reports ~INR 23,500/yr with an hourly figure (~INR 11/hr) that is internally consistent with an annual figure at 2080 hrs, but the resulting annual number is implausibly low for full-time work in India (below typical entry-level BPO pay). Likely a monthly-vs-annual labeling inconsistency in Glassdoor's scraped India data. Payscale figure used as primary for this reason - flagged here rather than silently discarding the discrepancy."
+      },
+      "notes": "Cash comp, not fully-loaded. Represents entry-level/generalist support agent, most applicable to high-volume ticket-handling roles typical of the customer support automation sector pack."
+    },
+    {
+      "id": "IN-CS-SPECIALIST-2026",
+      "geography": "IN",
+      "role": "customer_support_specialist",
+      "role_category": "higher_skill_support",
+      "sector": "customer_support",
+      "annual_cost_inr": { "low": 426250, "median": 610000, "high": 900000 },
+      "hourly_cost_inr_approx": 293,
+      "sample_basis": "500 salaries, national average",
+      "source": {
+        "name": "Glassdoor - Customer Support Specialist (India, national)",
+        "url": "https://www.glassdoor.co.in/Salaries/customer-support-specialist-salary-SRCH_KO0,27.htm",
+        "retrieved": "2026-08-19"
+      },
+      "notes": "Use for support roles requiring more technical/product knowledge than a generalist agent (e.g. escalation handling, tier-2 support) - distinct from IN-CS-AGENT-2026. City-level figures run notably higher (Bangalore/Mumbai/Chennai ~INR 6.5-6.8L median vs national INR 6.1L) - not included as separate entries yet, flagged as a possible future geography refinement below city level."
+    },
+    {
+      "id": "IN-AP-CLERK-2026",
+      "geography": "IN",
+      "role": "accounts_payable_clerk",
+      "role_category": "entry_level_finance_ops",
+      "sector": "document_processing",
+      "annual_cost_inr": { "low": 348103, "median": 588235, "high": 700367 },
+      "hourly_cost_inr_approx": 283,
+      "sample_basis": "Mixed - see individual sources, spread is wide and explicitly flagged",
+      "source": {
+        "name": "ERI SalaryExpert - Accounts Payable Clerk Salary in India",
+        "url": "https://www.salaryexpert.com/salary/job/accounts-payable-clerk/india",
+        "retrieved": "2026-08-19"
+      },
+      "cross_check": [
+        {
+          "name": "Indeed - Accounts Payable Clerk salary in India",
+          "url": "https://in.indeed.com/career/accounts-payable-clerk/salaries",
+          "retrieved": "2026-08-19",
+          "value_inr": 348103
+        },
+        {
+          "name": "Glassdoor - Accounts Payable Clerk (India, national)",
+          "url": "https://www.glassdoor.co.in/Salaries/accounts-payable-clerk-salary-SRCH_KO0,22.htm",
+          "retrieved": "2026-08-19",
+          "value_inr": 700367,
+          "note": "Small sample (n=41) - treated as an upper-bound cross-check, not the primary figure, given low sample size relative to other sources."
+        }
+      ],
+      "notes": "ERI SalaryExpert figure used as primary median since its stated methodology (employer + employee survey data) is more transparent than Glassdoor's ML-predicted figures for this role, and it sits between the Indeed low and Glassdoor high rather than at either extreme."
+    },
+    {
+      "id": "IN-AIML-ENGINEER-2026",
+      "geography": "IN",
+      "role": "ai_ml_engineer",
+      "role_category": "engineering_build_labor",
+      "sector": "cross_cutting",
+      "annual_cost_inr": { "low": 570250, "median": 1040000, "high": 1700000 },
+      "hourly_cost_inr_approx": 500,
+      "sample_basis": "666 salaries, national average",
+      "source": {
+        "name": "Glassdoor - AI/ML Engineer (India, national)",
+        "url": "https://www.glassdoor.co.in/Salaries/ai-ml-engineer-salary-SRCH_KO0%2C14.htm",
+        "retrieved": "2026-08-19"
+      },
+      "notes": "Used for 'build' cost estimates in the buy-vs-build stage costing (section 6.4 of the spec) - this is engineering labor cost for building/integrating the AI solution itself, not the process being automated. Wide range reflects India's real experience-band spread (entry-level IT-services vs. product/FAANG comp) - the median is a national blended figure, not representative of any specific company tier. Treat 'high' as closer to product-company/specialist comp, 'low' as closer to IT-services-firm comp."
+    }
+  ],
+
+  "not_yet_sourced": [
+    "US geography - no entries yet for any role. Do not add a US fallback without an equivalent sourced figure per role.",
+    "Cloud/infrastructure hosting costs (India or US)",
+    "Fully-loaded cost multiplier (benefits, PF/ESI, overhead) - see fully_loaded_multiplier_todo above",
+    "City-level breakdowns below national average, where the sector benchmark packs might eventually want them (Bangalore/Hyderabad/Mumbai/Chennai figures were seen in search results for customer support specialist and AP clerk roles but not yet incorporated as separate entries)"
+  ]
+}
