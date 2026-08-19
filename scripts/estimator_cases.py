@@ -11,7 +11,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Imports resolve from the editable src-layout installation.
 if "openai" not in sys.modules:
     _s = types.ModuleType("openai"); _s.OpenAI = lambda **kw: None
     sys.modules["openai"] = _s

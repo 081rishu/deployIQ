@@ -18,6 +18,7 @@ except ImportError:
 
 from openai import OpenAI
 
+from core.costs import record_usage
 from lib.logging_config import get_logger
 
 log = get_logger("llm.stt")
@@ -53,5 +54,7 @@ def transcribe_audio(
     text = resp
     if hasattr(resp, "text"):
         text = resp.text
+    record_usage(purpose="audio_transcription", model=MODEL,
+                 usage=getattr(resp, "usage", None))
     log.info("transcribe done chars=%d", len(str(text)))
     return str(text).strip()

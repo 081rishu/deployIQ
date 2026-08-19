@@ -67,7 +67,8 @@ class VoiceSession:
         from schemas.assessment_state import AssessmentState as AS
 
         self.state = AS(sector=sector, problem=problem)
-        log.info("session start sector=%s problem=%r", sector.value if hasattr(sector, 'value') else sector, problem)
+        log.info("session_start sector=%s problem_chars=%d",
+                 sector.value if hasattr(sector, "value") else sector, len(problem))
         result = run_turn(self.state, problem, self.context)
         self.context = result.context
         return result
@@ -85,7 +86,7 @@ class VoiceSession:
         log.info("respond audio_bytes=%d filename=%s", len(audio) if isinstance(audio, (bytes, bytearray)) else -1, name)
         transcript = transcribe_audio(audio, language=language, filename=name)
         self.last_transcript = transcript
-        log.info("transcript=%r", transcript)
+        log.info("transcript_received chars=%d", len(transcript))
         result = run_turn(self.state, transcript, self.context)
         self.context = result.context
         return result
@@ -93,7 +94,7 @@ class VoiceSession:
     def speech_for(self, result: TurnResult) -> bytes:
         """Synthesize the interviewer's reply text into audio."""
         text = self._reply_text(result)
-        log.info("speech_for text=%r", text)
+        log.info("speech_generated chars=%d", len(text))
         return synthesize(text)
 
     @staticmethod

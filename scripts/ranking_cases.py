@@ -27,7 +27,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Imports resolve from the editable src-layout installation.
 
 # The ranking path needs no LLM; stub the SDK so no key/network is required.
 if "openai" not in sys.modules:

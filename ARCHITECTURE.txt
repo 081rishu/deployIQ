@@ -1,6 +1,10 @@
 AI DEPLOYMENT DECISION ENGINE
 TECHNICAL ARCHITECTURE (MVP build — reflects spec v4)
 
+Runtime packages now live under `src/`. The logical package paths below omit
+that prefix (for example, `calc/` means `src/calc/`) to preserve the original
+architecture terminology.
+
 1. STACK
 
 FastAPI backend (Python). No database. The FastAPI service owns every LLM

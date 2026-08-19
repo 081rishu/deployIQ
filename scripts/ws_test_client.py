@@ -17,10 +17,8 @@ import json
 import os
 import sys
 
-# Allow running directly from scripts/ without installing the package.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+# Imports resolve from the editable src-layout installation.
 
 import websockets
 

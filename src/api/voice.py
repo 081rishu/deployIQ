@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import base64
 import json
+from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from core.request_context import get_request_id, reset_request_id, set_request_id
 from interviewer.engine import TurnResult
 from interviewer.voice import VoiceSession
 from lib.logging_config import get_logger
@@ -29,6 +31,7 @@ log = get_logger("api.voice")
 
 def _payload(result: TurnResult, extra: dict | None = None) -> dict:
     data: dict = {
+        "request_id": get_request_id(),
         "state": result.state.model_dump(mode="json"),
         "context": (result.context.model_dump(mode="json")
                     if result.context is not None else None),
@@ -56,7 +59,9 @@ def _base64_audio(text: str) -> str:
 @router.websocket("/ws/interview/voice")
 async def voice_interview(ws: WebSocket) -> None:
     await ws.accept()
-    log.info("ws connected")
+    connection_id = str(uuid4())
+    context_token = set_request_id(connection_id)
+    log.info("ws_connected")
     session: VoiceSession | None = None
     try:
         while True:
@@ -86,24 +91,30 @@ async def voice_interview(ws: WebSocket) -> None:
                 if action == "start":
                     sector = Sector(msg.get("sector", "customer_support"))
                     problem = msg.get("problem", "")
-                    log.info("ws start sector=%s problem=%r", sector.value, problem)
+                    log.info("ws_start sector=%s problem_chars=%d",
+                             sector.value, len(problem))
                     session = VoiceSession()
                     result = session.start(sector, problem)
                     await ws.send_json(_payload(result, {"type": "ready"}))
                 elif action == "ping":
                     await ws.send_json({"type": "pong"})
                 else:
-                    log.warning("ws unknown action=%r", action)
+                    log.warning("ws_unknown_action")
                     await ws.send_json({"type": "error", "message": "unknown action"})
                 continue
 
     except WebSocketDisconnect:
         log.info("ws disconnected (client)")
-    except Exception as exc:  # noqa: BLE001 - surface to client, keep socket alive
-        log.exception("ws error")
+    except Exception:  # noqa: BLE001 - log detail, return safe wire error
+        log.exception("ws_unhandled_exception")
         try:
-            await ws.send_json({"type": "error", "message": str(exc)})
+            await ws.send_json({
+                "type": "error",
+                "message": "Voice interview unavailable",
+                "request_id": connection_id,
+            })
         except Exception:
             pass
     finally:
+        reset_request_id(context_token)
         await ws.close()

@@ -15,7 +15,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Imports resolve from the editable src-layout installation.
 if "openai" not in sys.modules:
     _s = types.ModuleType("openai"); _s.OpenAI = lambda **kw: None
     sys.modules["openai"] = _s
@@ -537,11 +537,12 @@ def case_no_duplicate_ids() -> None:
 def case_frozen_layers_untouched() -> None:
     print("\n14 — the documentation cleanup altered no analytical code")
     root = Path(__file__).resolve().parent.parent
+    source_root = root / "src"
 
     forbidden = {"calc.engine": "run", "calc.driver_ranking": "rank_drivers",
                  "calc.sensitivity": "sweep", "solution.estimator": "estimate"}
     offenders: list[str] = []
-    for path in sorted((root / "report").glob("*.py")):
+    for path in sorted((source_root / "report").glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in forbidden:
@@ -565,7 +566,7 @@ def case_frozen_layers_untouched() -> None:
     check("14", bundled.scores.economic.flags,
           "the economic sanity flags still fire (guardrail 15 stays load-bearing)")
 
-    check("14", (root / "calc" / "models.py").read_text(encoding="utf-8")
+    check("14", (source_root / "calc" / "models.py").read_text(encoding="utf-8")
           .count("source_id") == 0,
           "calc/models.py was NOT reopened to propagate source ids — the "
           "evidence index carries that job instead")
@@ -576,12 +577,13 @@ def case_frozen_layers_untouched() -> None:
 def case_no_llm_in_report_layer() -> None:
     print("\nEXTRA — the deterministic report layer has no LLM dependency")
     root = Path(__file__).resolve().parent.parent
+    source_root = root / "src"
     hits: list[str] = []
     # narrate.py is the OPTIONAL LLM narration layer and legitimately imports
     # llm/ (it falls back deterministically). Every OTHER report module — the
     # deterministic half (assemble, evidence, schema, validate, render) — must
     # stay LLM-free, because the report must remain fully usable without one.
-    for path in sorted((root / "report").glob("*.py")):
+    for path in sorted((source_root / "report").glob("*.py")):
         if path.name == "narrate.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -592,7 +594,7 @@ def case_no_llm_in_report_layer() -> None:
                 hits += [path.name for a in node.names if a.name.startswith("llm")]
     check("EXTRA", not hits,
           f"no deterministic report module imports llm/ ({hits})")
-    check("EXTRA", (root / "report" / "narrate.py").exists(),
+    check("EXTRA", (source_root / "report" / "narrate.py").exists(),
           "narrate.py is the single optional LLM entry point")
 
     statement = Statement.code("Expected automation is estimated at 71-87%.")
@@ -932,14 +934,15 @@ def case_P2_deterministic() -> None:
 def case_P2_no_llm_dependency() -> None:
     print("\nP2-N — assembly requires no LLM access")
     root = Path(__file__).resolve().parent.parent
-    tree = ast.parse((root / "report" / "assemble.py").read_text(encoding="utf-8"))
+    source_root = root / "src"
+    tree = ast.parse((source_root / "report" / "assemble.py").read_text(encoding="utf-8"))
     imports = [n for n in ast.walk(tree)
                if isinstance(n, (ast.Import, ast.ImportFrom))]
     hits = [n for n in imports
             if "llm" in ((n.module or "") if isinstance(n, ast.ImportFrom) else "")]
     check("P2-N", not hits, "assemble.py never imports llm/")
     check("P2-N", "openai" not in open(  # noqa: SIM115
-        root / "report" / "assemble.py", encoding="utf-8").read(),
+        source_root / "report" / "assemble.py", encoding="utf-8").read(),
         "assemble.py contains no openai reference")
 
 

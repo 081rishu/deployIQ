@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -13,35 +13,33 @@ from pydantic import BaseModel
 from api.interview import router as interview_router
 from api.voice import voice_interview
 from calc.ai_state import LaborRealization
+from core.config import Settings
+from core.logging import configure_logging
+from core.middleware import install_api_observability
+from core.paths import static_path
 from pipeline import orchestrate
 from report.schema import LaborRealizationSource, ReportMode
 from schemas.assessment_state import AssessmentState
 
-def _allowed_origins() -> list[str]:
-    raw = os.getenv("DEPLOYIQ_ALLOWED_ORIGINS", "")
-    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
-    if "*" in origins:
-        raise RuntimeError(
-            "DEPLOYIQ_ALLOWED_ORIGINS cannot contain '*' when credentials are enabled"
-        )
-    return origins
-
+settings = Settings.from_env()
+configure_logging(settings)
 
 app = FastAPI(title="AI Deployment Decision Engine")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins(),
+    allow_origins=list(settings.allowed_origins),
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
+install_api_observability(app)
 
 app.include_router(interview_router)
 # FastAPI 0.141 lazy-includes routers; register the WebSocket handler directly
 # on the app so the route is live at startup (an included-router WS can 403).
 app.add_api_websocket_route("/ws/interview/voice", voice_interview)
 
-_VOICE_PAGE = os.path.join(os.path.dirname(__file__), "..", "static", "voice.html")
+_VOICE_PAGE = static_path("voice.html")
 
 
 class AssessmentRunRequest(BaseModel):
@@ -65,21 +63,22 @@ class AssessmentRunResponse(BaseModel):
     report_markdown: Optional[str] = None
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Process readiness only; deliberately makes no OpenAI request."""
+    return {"status": "ok"}
+
+
 @app.post("/api/assessment/run", response_model=AssessmentRunResponse)
 def assessment_run(req: AssessmentRunRequest) -> AssessmentRunResponse:
-    try:
-        run = orchestrate.run_assessment(
-            req.state,
-            labor_realization=req.labor_realization,
-            labor_realization_source=req.labor_realization_source,
-            enable_narration=req.enable_narration,
-            narration_temperature=req.narration_temperature,
-            narration_model=req.narration_model,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 - mapped to API failure semantics
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    run = orchestrate.run_assessment(
+        req.state,
+        labor_realization=req.labor_realization,
+        labor_realization_source=req.labor_realization_source,
+        enable_narration=req.enable_narration,
+        narration_temperature=req.narration_temperature,
+        narration_model=req.narration_model,
+    )
 
     report_json = run.rendered.json_doc if req.report_format in ("json", "both") else None
     report_markdown = run.rendered.markdown if req.report_format in ("markdown", "both") else None

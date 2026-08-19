@@ -587,15 +587,16 @@ def run_turn(state: AssessmentState, user_message: str,
             return warm
 
     state.turn_count += 1
-    log.info("turn=%d sector=%s msg=%r", state.turn_count, state.sector.value, user_message)
+    log.info("turn=%d sector=%s message_chars=%d",
+             state.turn_count, state.sector.value, len(user_message))
 
     # 1. Extraction + deterministic update/resolution.
     extracted = _extract(state, user_message)
     applied = _apply_updates(state, extracted)
     log.info("turn=%d extracted=%d applied=%d", state.turn_count, len(extracted), len(applied))
     if applied:
-        log.debug("turn=%d updates=%s", state.turn_count,
-                  [(u.field, u.value, u.provenance.value) for u in applied])
+        log.debug("turn=%d updated_fields=%s", state.turn_count,
+                  [(u.field, u.provenance.value) for u in applied])
 
     # 2. Select the highest-value unresolved need (deterministic).
     #    `need.attempts` is how many times we have ALREADY asked about this

@@ -13,6 +13,10 @@ dist/
 .env
 .env.local
 
+# Runtime / local artifacts
+logs/
+.superbrain/
+
 # OS / editor
 .DS_Store
 Thumbs.db

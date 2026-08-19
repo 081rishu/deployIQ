@@ -26,9 +26,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from core.paths import data_path
 from schemas.assessment_state import Provenance, RangeEstimate
 
-_PATH = Path(__file__).resolve().parent.parent / "data" / "labor_rates.json"
+_PATH = data_path("labor_rates.json")
 
 HOURS_PER_YEAR = 2080
 

@@ -20,9 +20,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from core.paths import data_path
 from schemas.assessment_state import Provenance, RangeEstimate, Sector
 
-_PACK_DIR = Path(__file__).resolve().parent.parent / "data" / "sector_benchmarks"
+_PACK_DIR = data_path("sector_benchmarks")
 
 # How firmly the figure was checked, independent of its provenance tag:
 #   primary_document — the source document/page itself was retrieved and read

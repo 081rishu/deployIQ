@@ -13,7 +13,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Imports resolve from the editable src-layout installation.
 if "openai" not in sys.modules:
     _s = types.ModuleType("openai"); _s.OpenAI = lambda **kw: None
     sys.modules["openai"] = _s
@@ -298,6 +298,25 @@ def case_K_envelope_as_confidence() -> None:
     check("K", not res.valid, "an envelope called a confidence interval is invalid")
     check("K", "envelope_as_confidence" in _codes(res),
           "the range-semantics error is reported")
+
+
+def case_K2_negated_envelope_language() -> None:
+    print("\nP3-K2 — an envelope saying 'not a confidence interval' remains valid")
+    report, bundle = _valid()
+    summary = report.section("executive_summary")
+    figures = [
+        f.model_copy(update={
+            "derivation": "interval bounds, not a confidence interval",
+        }) if f.key == "summary.automation" else f
+        for f in summary.figures
+    ]
+    patched = summary.model_copy(update={"figures": figures})
+    candidate = report.model_copy(update={
+        "sections": [patched if s.key == "executive_summary" else s
+                     for s in report.sections]})
+    res = validate.validate(candidate, bundle)
+    check("K2", res.valid,
+          "negated confidence-interval wording does not trigger the envelope guard")
 
 
 # --- L. invalid min > max --------------------------------------------------
@@ -635,6 +654,7 @@ def main() -> None:
     case_I_invalid_evidence_id()
     case_J_derived_without_sources()
     case_K_envelope_as_confidence()
+    case_K2_negated_envelope_language()
     case_L_min_gt_max()
     case_M_composite_in_summary()
     case_N_recommendation_in_summary()
@@ -1001,7 +1021,8 @@ def case_P4Y_deterministic() -> None:
 def case_P4Z_no_analysis() -> None:
     print("\nP4-Z — narration performs no analysis")
     root = Path(__file__).resolve().parent.parent
-    tree = ast.parse((root / "report" / "narrate.py").read_text(encoding="utf-8"))
+    source_root = root / "src"
+    tree = ast.parse((source_root / "report" / "narrate.py").read_text(encoding="utf-8"))
     forbidden = {"calc.engine": "run", "calc.driver_ranking": "rank_drivers",
                  "calc.sensitivity": "sweep", "solution.estimator": "estimate"}
     offenders = [f"{n.module}.{forbidden[n.module]}" for n in ast.walk(tree)

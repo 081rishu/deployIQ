@@ -34,7 +34,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-_PATH = Path(__file__).resolve().parent.parent / "data" / "compliance_attestations.json"
+from core.paths import data_path
+
+_PATH = data_path("compliance_attestations.json")
 
 
 class ClaimStatus(str, Enum):

@@ -18,9 +18,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from core.paths import data_path
 from schemas.assessment_state import Provenance, RangeEstimate
 
-_PATH = Path(__file__).resolve().parent.parent / "data" / "ai_pricing.json"
+_PATH = data_path("ai_pricing.json")
 
 
 class PricingRecord(BaseModel):

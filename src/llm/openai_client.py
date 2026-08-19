@@ -15,6 +15,8 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from core.costs import record_usage
+
 # Load the key from .env (README/.env.example), with .env.local taking
 # precedence for a local override. Both are gitignored; load_dotenv does not
 # overwrite already-set variables, so the first file wins.
@@ -45,8 +47,9 @@ def complete_json(
     Uses JSON-mode response_format so the result is always parseable.
     """
     client = _client()
+    selected_model = model or MODEL
     resp = client.chat.completions.create(
-        model=model or MODEL,
+        model=selected_model,
         temperature=temperature,
         response_format={"type": "json_object"},
         messages=[
@@ -54,6 +57,8 @@ def complete_json(
             {"role": "user", "content": user},
         ],
     )
+    record_usage(purpose="chat_json", model=selected_model,
+                 usage=getattr(resp, "usage", None))
     content = resp.choices[0].message.content or "{}"
     return json.loads(content)
 
@@ -66,12 +71,15 @@ def complete_text(
     model: Optional[str] = None,
 ) -> str:
     client = _client()
+    selected_model = model or MODEL
     resp = client.chat.completions.create(
-        model=model or MODEL,
+        model=selected_model,
         temperature=temperature,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     )
+    record_usage(purpose="chat_text", model=selected_model,
+                 usage=getattr(resp, "usage", None))
     return resp.choices[0].message.content or ""

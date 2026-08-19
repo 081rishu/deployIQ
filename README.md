@@ -45,103 +45,26 @@ built are listed under "Not built yet" below.
 
 ```
 .
-├── api/                        # FastAPI backend
-│   ├── main.py                 # app + route wiring
-│   ├── interview.py            # interview turn endpoints
-│   └── voice.py                # voice interview over WebSocket
-│
-├── schemas/
-│   └── assessment_state.py     # single source-of-truth Pydantic model
-│
-├── interviewer/                # AI interviewer (spec 10)
-│   ├── fields.py               # generalized field/question registry
-│   ├── engine.py               # 4-state adaptive engine (need select -> ask)
-│   ├── conversation.py         # turn-to-turn conversational context
-│   └── voice.py                # STT -> engine -> TTS turn orchestration
-│
-├── solution/                   # AI solution & architecture estimator (spec 7)
-│   ├── schema.py               # estimator + alternatives output types
-│   ├── patterns.py             # solution registry (patterns/impls/providers)
-│   ├── registry.py             # registry loading/validation
-│   ├── capabilities.py         # LLM workflow -> capability decomposition
-│   ├── ranking.py              # deterministic filter + rank
-│   ├── scope.py                # scope-derived effort/integration bands
-│   ├── workload.py             # handling-time -> workload shares
-│   ├── effort_bands.py         # effort band -> hours/rate/cost
-│   ├── performance.py          # per-architecture performance metrics
-│   ├── reference_solutions.py  # curated baseline per sector
-│   ├── evidence.py             # anchoring + provenance integrity sweep
-│   ├── risks.py                # structured risk controls
-│   ├── confidence.py           # field-quality/evidence confidence model
-│   ├── calibration.py          # versioned scope calibration params
-│   ├── constants.py
-│   ├── alternatives.py         # spec 11 — registry-derived, LLM-explained
-│   └── estimator.py            # orchestrator
-│
-├── llm/
-│   ├── openai_client.py        # thin wrapper around the OpenAI SDK
-│   ├── stt.py                  # speech-to-text
-│   └── tts.py                  # text-to-speech
-│
-├── calc/                       # Economic Engine (8) + Scoring (9) — no LLM
-│   ├── models.py               # value types + interval arithmetic
-│   ├── labor.py                # 8.1 both labor formulations + consistency check
-│   ├── current_state.py        # 8.2 current annual cost
-│   ├── ai_state.py             # 8.3/8.4 task AI economics, operating cost
-│   ├── implementation.py       # 8.5 staged buy/build costing
-│   ├── lifecycle.py            # 8.6/8.7 unit economics, savings, payback
-│   ├── benchmark_check.py      # 8.8 cross-check (never additive)
-│   ├── inference.py            # per-unit inference pricing from the registry
-│   ├── quality.py              # current-vs-AI quality comparison (absent-safe)
-│   ├── reliability.py          # reliability-gap consequence
-│   ├── sensitivity.py          # 8.10 recalculation interface
-│   ├── calibration.py          # versioned economic calibration params
-│   ├── engine.py               # orchestrator
-│   ├── economic_score.py       # 9.1
-│   ├── economic_sanity.py      # plausibility gate feeding 9.1's flags
-│   ├── feasibility_score.py    # 9.2
-│   ├── risk_score.py           # 9.3
-│   ├── composite.py            # 9.4
-│   ├── driver_ranking.py       # 9.5 decision drivers + uncertainty callout
-│   ├── uncertainty.py          # typed uncertainty (no fake categorical width)
-│   ├── assessment_confidence.py# 9.7
-│   └── scoring_calibration.py  # versioned scoring calibration params
-│
-├── data/
-│   ├── sector_benchmarks/      # static benchmark packs, one JSON per sector
-│   ├── ai_pricing.json         # model/provider per-unit pricing registry
-│   ├── labor_rates.json        # process + implementation labor rates
-│   ├── compliance_evidence.json
-│   └── compliance_attestations.json
-│
-├── lib/
-│   ├── benchmarks.py           # benchmark pack loader + provenance guardrail
-│   ├── pricing.py              # pricing registry loader
-│   ├── labor_rates.py          # labor-rate registry loader
-│   ├── compliance.py           # compliance evidence/attestation registry
-│   ├── vendor_attestations.py  # attestation ingest
-│   ├── reconciliation.py       # handling-time reconciliation helpers
-│   └── logging_config.py       # get_logger() helper
-│
-├── app.py                      # Streamlit harness for driving the interviewer
-├── static/voice.html           # browser client for the voice interview
-├── scripts/                    # acceptance suites + manual test harnesses
-│   ├── interviewer_cases.py    # spec 10
-│   ├── estimator_cases.py      # spec 7
-│   ├── ranking_cases.py        # spec 7.6/7.7
-│   ├── economic_cases.py       # spec 8
-│   ├── scoring_cases.py        # spec 9
-│   ├── alternatives_cases.py   # spec 11
-│   ├── compliance_cases.py     # compliance evidence registry
-│   └── conversation_test.py, ws_test_client.py, ws_readable.py
-├── logs/                       # recorded conversation-test transcripts
-├── docs/                       # per-layer work plans, critiques and open items
-│
-├── deployIQ_MVP.txt            # current spec (single file; v1-v6 merged)
-├── deployID_FULL_PRODUCT.txt
+├── src/                        # installable runtime packages
+│   ├── api/                    # FastAPI transport adapters
+│   ├── calc/                   # frozen economics and scoring domain
+│   ├── core/                   # config, logging, middleware, paths
+│   ├── interviewer/            # adaptive interview domain
+│   ├── lib/                    # registries, loaders, reconciliation
+│   ├── llm/                    # provider adapters (language/audio only)
+│   ├── pipeline/               # canonical orchestration
+│   ├── report/                 # report assembly/presentation boundary
+│   ├── schemas/                # shared Pydantic contracts
+│   ├── solution/               # estimator, registry and alternatives domain
+│   └── app.py                  # Streamlit interviewer harness
+├── scripts/                    # executable acceptance suites and manual tools
+├── docs/                       # specifications, critiques and operations notes
+├── .env.example
+├── .gitignore
 ├── ARCHITECTURE.txt
-├── .env.example                # copy to .env and fill in OPENAI_API_KEY
-├── requirements.txt
+├── deployIQ_MVP.txt
+├── pyproject.toml              # editable/installable project configuration
+├── requirements.txt            # compatibility dependency list
 └── README.md
 ```
 
@@ -193,7 +116,7 @@ Every analytical layer ships an acceptance suite under `scripts/`. They stub
 the LLM, need no API key, and are deterministic:
 
 ```bash
-for f in scripts/*_cases.py; do python3 "$f"; done
+for f in scripts/*_cases.py; do python -m "scripts.$(basename "${f%.py}")"; done
 ```
 
 Last full run: 771 checks, 0 failures. The suites
@@ -201,26 +124,38 @@ stub the OpenAI client, so they exercise the deterministic layers only.
 
 ## Environment variables
 
-```
-OPENAI_API_KEY=your_key_here
-DEPLOYIQ_ALLOWED_ORIGINS=https://<frontend-host>
-```
+- **Required for LLM/STT/TTS calls:** `OPENAI_API_KEY`.
+- **Required in production with a separate frontend:** `DEPLOYIQ_ALLOWED_ORIGINS` — comma-separated HTTPS origins; `*` is rejected because credentialed CORS is enabled.
+- **Optional model selection:** `OPENAI_MODEL`, `OPENAI_STT_MODEL`, `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`.
+- **Optional platform behavior:** `DEPLOYIQ_ENV`, `DEPLOYIQ_LOG_LEVEL`.
+- **Optional process-local platform cost estimates:** `DEPLOYIQ_MODEL_PRICES_JSON` with USD-per-million-token input/output prices. When unset or usage is unavailable, usage is logged without an invented cost.
+
+See `.env.example` for safe examples. Do not commit `.env` or `.env.local`.
+
+## Deployment notes
+
+- Install with `python -m pip install -e ".[dev]"` for source deployments.
+- Start the backend with `python -m uvicorn api.main:app --host 0.0.0.0 --port 8000`.
+- Readiness is `GET /health`; it returns process readiness and deliberately does not call OpenAI.
+- A Vercel frontend uses `https://<backend>/api/...` for REST and `wss://<backend>/ws/interview/voice` for voice.
+- JSON logs include request IDs and safe stage/cost metadata. This MVP does not persist telemetry or cost events.
 
 ## Getting started
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -e ".[dev]"
 cp .env.example .env        # then fill in OPENAI_API_KEY
 
 .venv/bin/python -m uvicorn api.main:app --reload
+# Production-style: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
 API runs on `http://localhost:8000`. There is no product frontend; two test
 surfaces exist for driving the interviewer by hand:
 
 ```bash
-.venv/bin/python -m streamlit run app.py     # text interview harness
+.venv/bin/python -m streamlit run src/app.py # text interview harness
 # or, with the API running, open http://localhost:8000/voice
 ```
 
@@ -265,8 +200,8 @@ warrants it. Conditions that depend on facts the assessment does not capture
 are tagged `MANUAL` and surfaced as uncertainties rather than silently ignored.
 
 ```bash
-python3 scripts/ranking_cases.py     # tie case + 3 adversarial cases, no LLM
-python3 scripts/estimator_cases.py   # C1-C14 acceptance cases A-I, no LLM
+python -m scripts.ranking_cases     # tie case + 3 adversarial cases, no LLM
+python -m scripts.estimator_cases   # C1-C14 acceptance cases A-I, no LLM
 ```
 
 The estimator enforces its boundary structurally: the LLM decomposes and
@@ -287,7 +222,7 @@ the current-cost baseline an explicit floor. Payback is only stated when the
 monthly net benefit is genuinely positive.
 
 ```bash
-python3 scripts/economic_cases.py    # 21 checks, no LLM
+python -m scripts.economic_cases    # 21 checks, no LLM
 ```
 
 ## Scoring and Decision Drivers
@@ -306,7 +241,7 @@ AND poorly known, since neither alone qualifies. The LLM only rephrases the
 statements; it never selects which facts appear.
 
 ```bash
-python3 scripts/scoring_cases.py     # 25 checks, no LLM
+python -m scripts.scoring_cases     # 25 checks, no LLM
 ```
 
 See `docs/scoring_system_todo.md` for known weaknesses — in particular that
@@ -314,7 +249,7 @@ elasticity measured on a bounded score is distorted by saturation.
 
 ## Benchmark packs
 
-`data/sector_benchmarks/*.json`, loaded by `lib/benchmarks.py`. Each figure
+`src/deployiq_assets/data/sector_benchmarks/*.json`, loaded by `lib/benchmarks.py`. Each figure
 carries value/unit, provenance, source, URL, date and geography, and is
 exposed as a `RangeEstimate` so it enters the analysis with its citation
 attached. A figure may only claim `sourced` if it names a retrievable source

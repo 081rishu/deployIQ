@@ -13,7 +13,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Imports resolve from the editable src-layout installation.
 if "openai" not in sys.modules:
     _s = types.ModuleType("openai"); _s.OpenAI = lambda **kw: None
     sys.modules["openai"] = _s
@@ -254,7 +254,7 @@ def case_unknown_bounded() -> None:
 
 def case_voice_text_parity() -> None:
     print("\nVOICE/TEXT — one engine, no separate assessment logic")
-    src = Path("interviewer/voice.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "src" / "interviewer" / "voice.py").read_text()
     check("VOICE", "run_turn" in src,
           "the voice path calls the shared engine")
     for forbidden in ("_apply_updates", "select_next_need", "_minimum_sufficient"):

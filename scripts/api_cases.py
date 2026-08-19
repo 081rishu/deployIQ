@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import os
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Imports resolve from the editable src-layout installation.
 if "openai" not in sys.modules:
     _s = types.ModuleType("openai")
     _s.OpenAI = lambda **kw: None
@@ -19,10 +20,15 @@ if "openai" not in sys.modules:
 
 from fastapi.testclient import TestClient
 
+import core
 import api.interview as interview_api
 import api.main as api_main
 import api.voice as voice_api
 from calc.ai_state import LaborRealization
+from core.config import Settings
+from core.costs import record_usage, tracker
+from core.observability import run_stage
+from core.request_context import get_request_id, reset_request_id, set_request_id
 from interviewer.conversation import ConversationContext
 from interviewer.engine import TurnResult
 import interviewer.voice as voice_session_mod
@@ -100,6 +106,10 @@ def post_run(client: TestClient, payload: dict) -> dict:
 def case_A_B_C(client: TestClient) -> None:
     print("\nA/B/C — app imports, valid request reaches pipeline, malformed request")
     check("A", hasattr(api_main, "app"), "FastAPI app imports")
+    health = client.get("/health")
+    check("A", health.status_code == 200 and health.json() == {"status": "ok"}
+          and bool(health.headers.get("X-Request-ID")),
+          "health endpoint is ready without an OpenAI call")
 
     captured = {"called": 0, "state_type": None}
     orig = api_main.orchestrate.run_assessment
@@ -135,6 +145,24 @@ def case_A_B_C(client: TestClient) -> None:
 
     bad = client.post("/api/assessment/run", json={"state": {"sector": "invalid"}})
     check("C", bad.status_code == 422, "malformed request rejected at API boundary")
+    check("C", bool(bad.headers.get("X-Request-ID")),
+          "API responses carry a correlation id")
+
+    orig = api_main.orchestrate.run_assessment
+    try:
+        def crash(*_args, **_kw):
+            raise RuntimeError("internal details must not reach clients")
+
+        api_main.orchestrate.run_assessment = crash
+        failed = client.post("/api/assessment/run", json={
+            "state": state().model_dump(mode="json"),
+        })
+        check("C", failed.status_code == 500, "unexpected server failure is HTTP 500")
+        check("C", failed.json().get("detail") == "Internal server error"
+              and "internal details" not in failed.text,
+              "unexpected failure is sanitized for clients")
+    finally:
+        api_main.orchestrate.run_assessment = orig
 
 
 def case_D_E_F_G_H_I_J(client: TestClient) -> None:
@@ -406,8 +434,9 @@ def case_voice_transport_and_cors() -> None:
               "successful voice turn returns actual STT transcript")
         check("voice-B", isinstance(turns[0].get("state"), dict),
               "voice turn exposes AssessmentState")
-        check("voice-C", isinstance(turns[0].get("context"), dict),
-              "voice turn exposes ConversationContext")
+        check("voice-C", isinstance(turns[0].get("context"), dict)
+              and bool(turns[0].get("request_id")),
+              "voice turn exposes ConversationContext and a connection id")
         check("voice-D", turns[1]["transcript"] == "terminal transcript"
               and turns[1]["stop"] and isinstance(turns[1]["state"], dict)
               and isinstance(turns[1]["context"], dict),
@@ -424,6 +453,27 @@ def case_voice_transport_and_cors() -> None:
         voice_session_mod.transcribe_audio = orig_transcribe
         voice_session_mod.run_turn = orig_run_turn
         voice_api._base64_audio = orig_audio
+
+    original_session = voice_api.VoiceSession
+    try:
+        class BrokenSession:
+            def start(self, *_args, **_kwargs):
+                raise RuntimeError("voice internals must not reach clients")
+
+        voice_api.VoiceSession = BrokenSession
+        failed_ws = _FakeWebSocket([
+            {"type": "websocket.receive", "text": json.dumps({
+                "action": "start", "sector": "document_processing"})},
+            {"type": "websocket.disconnect"},
+        ])
+        asyncio.run(voice_api.voice_interview(failed_ws))
+        safe_error = next(m for m in failed_ws.sent if m.get("type") == "error")
+        check("voice-I", safe_error.get("message") == "Voice interview unavailable"
+              and "internals" not in str(safe_error)
+              and bool(safe_error.get("request_id")),
+              "unexpected WebSocket failure is safe and observable")
+    finally:
+        voice_api.VoiceSession = original_session
 
     old = os.environ.get("DEPLOYIQ_ALLOWED_ORIGINS")
     try:
@@ -445,7 +495,7 @@ def case_voice_transport_and_cors() -> None:
         os.environ["DEPLOYIQ_ALLOWED_ORIGINS"] = "*"
         wildcard_rejected = False
         try:
-            configured._allowed_origins()
+            Settings.from_env()
         except RuntimeError:
             wildcard_rejected = True
         check("cors-J", wildcard_rejected,
@@ -458,6 +508,73 @@ def case_voice_transport_and_cors() -> None:
         importlib.reload(api_main)
 
 
+def case_platform_core() -> None:
+    print("\nPLATFORM — core package/config/request context")
+    check("platform", bool(core.__doc__), "core package imports")
+    configured = Settings.from_env()
+    check("platform", isinstance(configured.allowed_origins, tuple),
+          "environment configuration produces an immutable origin allowlist")
+    token = set_request_id("test-request-id")
+    try:
+        check("platform", get_request_id() == "test-request-id",
+              "request context retains the active correlation id")
+    finally:
+        reset_request_id(token)
+    check("platform", get_request_id() is None,
+          "request context resets after request completion")
+
+
+def case_operational_core() -> None:
+    print("\nOPERATIONS — stage telemetry, usage extraction, and safe metadata")
+    old_prices = os.environ.get("DEPLOYIQ_MODEL_PRICES_JSON")
+    token = set_request_id("cost-request-id")
+    try:
+        os.environ["DEPLOYIQ_MODEL_PRICES_JSON"] = (
+            '{"test-model":{"input_per_1m_usd":2.0,"output_per_1m_usd":4.0}}'
+        )
+        tracker.clear()
+        event = record_usage(
+            purpose="chat_json", model="test-model",
+            usage={"prompt_tokens": 500_000, "completion_tokens": 250_000},
+        )
+        missing = record_usage(purpose="audio_transcription", model="stt", usage=None)
+        check("ops", event.request_id == "cost-request-id"
+              and event.total_tokens == 750_000
+              and event.estimated_usd == 2.0,
+              "usage event carries request id, tokens, and configured cost")
+        check("ops", missing.total_tokens is None and missing.estimated_usd is None,
+              "missing provider usage is recorded without invented cost")
+    finally:
+        reset_request_id(token)
+        if old_prices is None:
+            os.environ.pop("DEPLOYIQ_MODEL_PRICES_JSON", None)
+        else:
+            os.environ["DEPLOYIQ_MODEL_PRICES_JSON"] = old_prices
+
+    captured: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    logger = logging.getLogger("deployiq.stage")
+    handler = Capture()
+    logger.addHandler(handler)
+    try:
+        check("ops", run_stage("unit_stage", lambda: "ok") == "ok",
+              "stage wrapper preserves operation result")
+        try:
+            run_stage("unit_failure", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        except RuntimeError:
+            pass
+        check("ops", any("stage_started name=unit_stage" in item for item in captured)
+              and any("stage_completed name=unit_stage" in item for item in captured)
+              and any("stage_failed name=unit_failure" in item for item in captured),
+              "stage telemetry records start, completion, and failure without payload content")
+    finally:
+        logger.removeHandler(handler)
+
+
 def main() -> None:
     client = TestClient(api_main.app)
     case_A_B_C(client)
@@ -465,6 +582,8 @@ def main() -> None:
     case_S_T_U_V_W_AC(client)
     case_X_Y_Z_AA_AB(client)
     case_voice_transport_and_cors()
+    case_platform_core()
+    case_operational_core()
 
     print()
     if failures:
