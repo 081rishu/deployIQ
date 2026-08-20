@@ -136,9 +136,12 @@ class VoiceSession:
 
         name = filename or _detect_filename(audio)
         log.info("respond audio_bytes=%d filename=%s", len(audio) if isinstance(audio, (bytes, bytearray)) else -1, name)
-        transcript = transcribe_audio(
-            audio, language=language, filename=name,
-            prompt=transcription_vocabulary(self.state.sector))
+        # No vocabulary prompt: a live run showed the model returning the
+        # prompt itself as the transcript when it could not make out the
+        # audio, which put the glossary into the interview as the user's own
+        # words. See llm/stt.py. The vocabulary below is kept for reference
+        # and for any caller willing to accept that risk explicitly.
+        transcript = transcribe_audio(audio, language=language, filename=name)
         self.last_transcript = transcript
         log.info("transcript_received chars=%d", len(transcript))
         result = run_turn(self.state, transcript, self.context)
