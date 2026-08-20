@@ -25,3 +25,4 @@ Thumbs.db
 .vscode/
 *.log
 providers.json
+RENDER_ENV.txt
