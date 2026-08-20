@@ -73,6 +73,24 @@ class VoiceSession:
         self.context = result.context
         return result
 
+    def resume(self, state: AssessmentState,
+               context: Optional[ConversationContext]) -> None:
+        """Adopt an interview already begun over REST.
+
+        The interview is started once, by /api/interview/start. A websocket
+        that called start() again would run a second, independent first turn —
+        a second LLM call, a second AssessmentState, and a duplicate greeting
+        for the user. Voice is a transport for turns over the client's state,
+        exactly as the REST path is; it owns no interview of its own.
+
+        No turn is run and no LLM is called here: the client already holds the
+        first question.
+        """
+        self.state = state
+        self.context = context
+        log.info("session_resume turn_count=%d status=%s",
+                 state.turn_count, state.status.value)
+
     def respond(self, audio: bytes, *, language: str = "en", filename: str | None = None) -> TurnResult:
         """Take the user's spoken answer, transcribe it, run a turn, and
         (for the caller) render the reply to audio via TTS.

@@ -1,8 +1,13 @@
 """Voice interview over WebSocket (ARCHITECTURE 3.1 extension).
 
 Protocol (binary-friendly for a browser mic):
-  client -> server   JSON {"action":"start","sector":...,"problem":...}
+  client -> server   JSON {"action":"resume","state":...,"context":...,"speak":"<text>"}
   server -> client   JSON {"type":"ready","state":...,"context":...,"status":...,"question":...,"audio":<b64 mp3>}
+
+`resume` is what a browser uses: /api/interview/start has already run the
+first turn, so the socket adopts that state instead of starting a second,
+independent interview. `start` remains for non-browser clients that have no
+prior state (scripts/ws_test_client.py).
   client -> server   binary frame = user speech audio (e.g. webm/ogg from mic)
   server -> client   JSON {"type":"turn","state":...,"context":...,"transcript":...,"status":...,"question":...,"audio":<b64 mp3>,"stop":bool}
 
@@ -20,10 +25,11 @@ from uuid import uuid4
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from core.request_context import get_request_id, reset_request_id, set_request_id
+from interviewer.conversation import ConversationContext
 from interviewer.engine import TurnResult
 from interviewer.voice import VoiceSession
 from lib.logging_config import get_logger
-from schemas.assessment_state import Sector
+from schemas.assessment_state import AssessmentState, Sector
 
 router = APIRouter(tags=["voice"])
 log = get_logger("api.voice")
@@ -88,7 +94,41 @@ async def voice_interview(ws: WebSocket) -> None:
             if "text" in raw:
                 msg = json.loads(raw["text"])
                 action = msg.get("action")
-                if action == "start":
+                if action == "resume":
+                    # Adopt the interview /api/interview/start already began.
+                    # No turn is run: running one here would duplicate the
+                    # greeting the client is already showing and burn a second
+                    # LLM call. `speak` is TTS-only text the server itself
+                    # produced on the REST turn; it never enters interview
+                    # logic, and an absent/blank value simply means silence.
+                    session = VoiceSession()
+                    session.resume(
+                        AssessmentState.model_validate(msg.get("state") or {}),
+                        (ConversationContext.model_validate(msg["context"])
+                         if msg.get("context") else None),
+                    )
+                    log.info("ws_resume turn_count=%d", session.state.turn_count)
+                    speak = str(msg.get("speak") or "").strip()
+                    payload = {
+                        "type": "ready",
+                        "request_id": get_request_id(),
+                        "state": session.state.model_dump(mode="json"),
+                        "context": (session.context.model_dump(mode="json")
+                                    if session.context is not None else None),
+                        "status": session.state.status.value,
+                        "stop": False,
+                        "stop_reason": None,
+                        # Deliberately null: the client already rendered these
+                        # from the REST turn, and re-sending them is exactly
+                        # the duplicate this action exists to remove.
+                        "question": None,
+                        "acknowledgment": None,
+                        "updated_fields": [],
+                    }
+                    if speak:
+                        payload["audio"] = _base64_audio(speak)
+                    await ws.send_json(payload)
+                elif action == "start":
                     sector = Sector(msg.get("sector", "customer_support"))
                     problem = msg.get("problem", "")
                     log.info("ws_start sector=%s problem_chars=%d",

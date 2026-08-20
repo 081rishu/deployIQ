@@ -35,7 +35,7 @@ import interviewer.voice as voice_session_mod
 from pipeline import orchestrate as orch
 from report import narrate as narrate_mod
 from report.schema import LaborRealizationSource, ReportMode
-from schemas.assessment_state import AssessmentState, InterviewStatus, RiskInputs
+from schemas.assessment_state import AssessmentState, InterviewStatus, RiskInputs, Sector
 from scripts.report_cases import rng, solution, state
 
 failures: list[str] = []
@@ -575,6 +575,62 @@ def case_operational_core() -> None:
         logger.removeHandler(handler)
 
 
+def case_voice_resume() -> None:
+    """The socket adopts the REST interview instead of starting a second one."""
+    print("\nVOICE/RESUME — websocket adopts the interview /api/interview/start began")
+    orig_run_turn = voice_session_mod.run_turn
+    orig_audio = voice_api._base64_audio
+    turns_run: list[str] = []
+    try:
+        def counting_run_turn(st, message, context=None):
+            turns_run.append(message)
+            return TurnResult(state=st, context=context or ConversationContext(),
+                              status=InterviewStatus.INTERVIEWING, stop=False,
+                              question="next question", acknowledgment="ack")
+
+        voice_session_mod.run_turn = counting_run_turn
+        voice_api._base64_audio = lambda text: f"audio:{text}"
+
+        started = AssessmentState(sector=Sector.CUSTOMER_SUPPORT, problem="ticket backlog")
+        started.turn_count = 1
+        ws = _FakeWebSocket([
+            {"type": "websocket.receive", "text": json.dumps({
+                "action": "resume",
+                "state": started.model_dump(mode="json"),
+                "context": ConversationContext().model_dump(mode="json"),
+                "speak": "Hello there. What is your name?"})},
+            {"type": "websocket.disconnect"},
+        ])
+        asyncio.run(voice_api.voice_interview(ws))
+        ready = next(m for m in ws.sent if m.get("type") == "ready")
+
+        check("resume-A", turns_run == [],
+              "resume runs NO interview turn — the client already holds turn one")
+        check("resume-B", ready.get("question") is None
+              and ready.get("acknowledgment") is None,
+              "the ready frame carries no question/acknowledgment, so the client "
+              "cannot render the greeting a second time")
+        check("resume-C", ready["state"]["turn_count"] == 1,
+              "the client's own AssessmentState is adopted, not a fresh one")
+        check("resume-D", ready.get("audio") == "audio:Hello there. What is your name?",
+              "`speak` is synthesized so the first question is still voiced")
+
+        # Without `speak` there is nothing to say and no TTS call is made.
+        ws2 = _FakeWebSocket([
+            {"type": "websocket.receive", "text": json.dumps({
+                "action": "resume", "state": started.model_dump(mode="json"),
+                "context": None})},
+            {"type": "websocket.disconnect"},
+        ])
+        asyncio.run(voice_api.voice_interview(ws2))
+        ready2 = next(m for m in ws2.sent if m.get("type") == "ready")
+        check("resume-E", "audio" not in ready2,
+              "no `speak` means no synthesized audio rather than empty audio")
+    finally:
+        voice_session_mod.run_turn = orig_run_turn
+        voice_api._base64_audio = orig_audio
+
+
 def main() -> None:
     client = TestClient(api_main.app)
     case_A_B_C(client)
@@ -582,6 +638,7 @@ def main() -> None:
     case_S_T_U_V_W_AC(client)
     case_X_Y_Z_AA_AB(client)
     case_voice_transport_and_cors()
+    case_voice_resume()
     case_platform_core()
     case_operational_core()
 
