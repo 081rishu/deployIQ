@@ -370,6 +370,36 @@ def get_field(key: str) -> Optional[FieldSpec]:
     return None
 
 
+# Facts a person naturally states in one breath. Asking each of these on its
+# own turn is what made the interview feel like a form and burned the question
+# budget before Tier 2 was ever reached — the staff cost question in
+# particular was rarely asked, and the economics came back partial.
+#
+# The GROUPING is deterministic and lives here; the LLM only phrases it. The
+# first key is the field actually being asked for, the rest are invited in the
+# same sentence and filled only if the user volunteers them. The extractor
+# already pulls every fact from a single answer, so nothing else changes.
+ASK_TOGETHER: list[list[str]] = [
+    ["monthly_volume", "avg_time_per_unit_minutes"],
+    ["current_headcount", "worker_role", "fully_loaded_annual_cost"],
+    ["current_tools", "integration_complexity"],
+    ["error_rate", "rework_time_per_error_minutes"],
+    ["current_quality_metric", "current_quality_value"],
+]
+
+# At most this many facts in one question. Three is already a lot to hold in
+# your head when answering out loud.
+MAX_FACTS_PER_QUESTION = 3
+
+
+def companions_for(field_key: str) -> list[str]:
+    """Other fields that may ride along with this one, in group order."""
+    for group in ASK_TOGETHER:
+        if field_key in group:
+            return [k for k in group if k != field_key]
+    return []
+
+
 def fields_for_sector(sector: Sector) -> list[FieldSpec]:
     return [f for f in FIELDS if sector in f.sectors]
 

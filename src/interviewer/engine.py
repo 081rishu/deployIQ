@@ -58,7 +58,15 @@ MAX_ATTEMPTS_PER_FIELD = 3
 MAX_QUESTIONS = 12
 # Tier-2 questions are asked only while this much of the budget remains, so
 # enrichment can never crowd out a clarification on a Tier-1 answer.
-TIER2_BUDGET_RESERVE = 3
+# Reserved turns at the END of the budget in which Tier-2 will not be asked.
+#
+# Zero, deliberately. The name suggests it protects Tier 2, but it did the
+# opposite: it closed the Tier-2 window three turns early, and since Tier 1 is
+# always selected first, Tier 1 alone consumed the budget before the window
+# opened. Staff cost was never asked and the economics came back partial.
+# Tier 1 is prioritised by selection, so there is nothing left to reserve for;
+# MAX_QUESTIONS alone bounds the interview.
+TIER2_BUDGET_RESERVE = 0
 
 
 class NeedType(str, Enum):
@@ -404,7 +412,12 @@ def _generate_question(state: AssessmentState, need: Need, last_message: str,
         "interviewer. You must produce exactly ONE natural, conversational "
         f"turn that addresses the need to {mode}.\n\n"
         "RULES:\n"
-        "- Ask for exactly one piece of information. Never bundle two questions.\n"
+        "- Ask for the PRIMARY fact. If companion facts are listed below, you "
+        "may invite them in the same natural sentence — the way a person would "
+        "actually ask. Do not turn it into a list of separate questions, and "
+        "never exceed the facts given to you.\n"
+        "- Companions are optional: if the user answers only the primary fact, "
+        "that is a complete answer and the rest will be asked later.\n"
         "- Sound like a real conversation, not a form. Vary wording from the "
         "template; feel free to acknowledge what the user just said.\n"
         "- If the field is numeric and ask_range is true, invite a range "
@@ -423,9 +436,44 @@ def _generate_question(state: AssessmentState, need: Need, last_message: str,
     user = (
         f"Current state:\n{json.dumps(_current_values(state), indent=2)}\n\n"
         f"Last user message:\n\"{last_message}\"\n\n"
-        f"Field to {mode}:\n{json.dumps(need.field.model_dump(), indent=2)}"
+        f"PRIMARY field to {mode}:\n{json.dumps(need.field.model_dump(), indent=2)}"
     )
+    companions = _companion_specs(state, need)
+    if companions:
+        user += ("\n\nCompanion facts you may invite in the same sentence:\n"
+                 + json.dumps(companions, indent=2))
     return complete_json(system, user)
+
+
+def _companion_specs(state: AssessmentState, need: Need) -> list[dict]:
+    """Which other fields may ride along with this question.
+
+    Deterministic: the grouping is declared in fields.py and filtered here to
+    what is still unanswered and applicable. The LLM receives the list and
+    phrases it; it never chooses what to ask.
+
+    Only for MISSING needs — a clarification is already narrow, and widening
+    it would lose the point of asking again.
+    """
+    from interviewer.fields import (MAX_FACTS_PER_QUESTION, companions_for,
+                                    fields_for_sector, get_field)
+
+    if need.need_type != NeedType.MISSING:
+        return []
+    applicable = {f.key for f in fields_for_sector(state.sector)}
+    out = []
+    for key in companions_for(need.field.key):
+        if key not in applicable or _resolved(state, get_field(key)):
+            continue
+        spec = get_field(key)
+        if spec is None:
+            continue
+        out.append({"key": spec.key, "label": spec.label,
+                    "value_type": spec.value_type.value,
+                    "ask_range": spec.ask_range, "probe": spec.probe})
+        if len(out) >= MAX_FACTS_PER_QUESTION - 1:
+            break
+    return out
 
 
 def _extract_name(message: str) -> Optional[str]:
