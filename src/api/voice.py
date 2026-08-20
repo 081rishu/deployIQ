@@ -62,6 +62,23 @@ def _base64_audio(text: str) -> str:
     return base64.b64encode(synthesize(text)).decode("ascii")
 
 
+def _turn_error_message(exc: Exception) -> str:
+    """What to tell the user about a failed turn.
+
+    Deliberately not the exception text: it can carry account and billing
+    detail. The distinction that matters to the person talking is whether
+    retrying is worth it, so the message says which case this is and that
+    typing still works. The specifics stay in the log.
+    """
+    name = type(exc).__name__
+    if name in ("RateLimitError", "APITimeoutError", "APIConnectionError",
+                "InternalServerError"):
+        return ("The voice service is temporarily unavailable. Your interview "
+                "is still here — try again in a moment, or continue by typing.")
+    return ("That answer could not be processed. Please try again, or "
+            "continue by typing.")
+
+
 @router.websocket("/ws/interview/voice")
 async def voice_interview(ws: WebSocket) -> None:
     await ws.accept()
@@ -83,7 +100,22 @@ async def voice_interview(ws: WebSocket) -> None:
                     await ws.send_json({"type": "error", "message": "start first"})
                     continue
                 log.info("received audio bytes=%d", len(raw["bytes"]))
-                result = session.respond(raw["bytes"])
+                try:
+                    result = session.respond(raw["bytes"])
+                except Exception as exc:  # noqa: BLE001 - one turn, not the session
+                    # A failed turn must not end the interview. This used to
+                    # fall through to the handler below, which closed the
+                    # socket, so a single transcription failure — a provider
+                    # hiccup, an exhausted quota — destroyed a conversation
+                    # the user had already spent ten questions on.
+                    log.exception("voice_turn_failed")
+                    await ws.send_json({
+                        "type": "turn_error",
+                        "recoverable": True,
+                        "message": _turn_error_message(exc),
+                        "request_id": get_request_id(),
+                    })
+                    continue
                 await ws.send_json(_payload(result, {
                     "type": "turn",
                     "transcript": session.last_transcript or "",

@@ -631,6 +631,71 @@ def case_voice_resume() -> None:
         voice_api._base64_audio = orig_audio
 
 
+def case_voice_turn_failure_is_survivable() -> None:
+    """A failed turn must not end the interview."""
+    print("\nVOICE/RESILIENCE — one failed turn does not destroy the session")
+    orig_transcribe = voice_session_mod.transcribe_audio
+    orig_run_turn = voice_session_mod.run_turn
+    orig_audio = voice_api._base64_audio
+    try:
+        calls = {"n": 0}
+
+        class _FakeRateLimit(Exception):
+            pass
+        _FakeRateLimit.__name__ = "RateLimitError"
+
+        def flaky_transcribe(audio, **_kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _FakeRateLimit("You have no credits remaining. Add credits at "
+                                     "https://platform.openai.com/settings/billing")
+            return "eight thousand tickets"
+
+        def fake_run_turn(st, message, context=None):
+            return TurnResult(state=st, context=context or ConversationContext(),
+                              status=InterviewStatus.INTERVIEWING, stop=False,
+                              question="next question", acknowledgment="ack")
+
+        voice_session_mod.transcribe_audio = flaky_transcribe
+        voice_session_mod.run_turn = fake_run_turn
+        voice_api._base64_audio = lambda _t: "mock-audio"
+
+        started = AssessmentState(sector=Sector.CUSTOMER_SUPPORT, problem="backlog")
+        ws = _FakeWebSocket([
+            {"type": "websocket.receive", "text": json.dumps({
+                "action": "resume", "state": started.model_dump(mode="json"),
+                "context": None})},
+            {"type": "websocket.receive", "bytes": b"first-attempt"},   # fails
+            {"type": "websocket.receive", "bytes": b"second-attempt"},  # succeeds
+            {"type": "websocket.disconnect"},
+        ])
+        asyncio.run(voice_api.voice_interview(ws))
+
+        turn_errors = [m for m in ws.sent if m.get("type") == "turn_error"]
+        turns = [m for m in ws.sent if m.get("type") == "turn"]
+        fatal = [m for m in ws.sent if m.get("type") == "error"]
+
+        check("resilience-A", len(turn_errors) == 1 and turn_errors[0].get("recoverable") is True,
+              "the failed turn is reported as recoverable, not as a dead session")
+        check("resilience-B", len(turns) == 1 and turns[0]["transcript"] == "eight thousand tickets",
+              "the NEXT answer on the same socket still works — the interview survived")
+        check("resilience-C", not fatal,
+              "no fatal error frame is sent for a single failed turn")
+        # Read defensively: when the isolation regresses there is no
+        # turn_error at all, and the remaining checks should report that
+        # rather than crash the suite on an index.
+        msg = turn_errors[0]["message"] if turn_errors else ""
+        check("resilience-D", bool(msg) and "credits" not in msg
+              and "platform.openai.com" not in msg,
+              "account and billing detail stays in the log, not on the wire")
+        check("resilience-E", "continue by typing" in msg,
+              "the user is told what they can still do")
+    finally:
+        voice_session_mod.transcribe_audio = orig_transcribe
+        voice_session_mod.run_turn = orig_run_turn
+        voice_api._base64_audio = orig_audio
+
+
 def main() -> None:
     client = TestClient(api_main.app)
     case_A_B_C(client)
@@ -639,6 +704,7 @@ def main() -> None:
     case_X_Y_Z_AA_AB(client)
     case_voice_transport_and_cors()
     case_voice_resume()
+    case_voice_turn_failure_is_survivable()
     case_platform_core()
     case_operational_core()
 
