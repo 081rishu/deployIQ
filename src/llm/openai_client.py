@@ -15,7 +15,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from llm.provider import client_for
+from llm.provider import execute
 
 from core.costs import record_usage
 
@@ -28,8 +28,6 @@ load_dotenv(".env")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 
-def _client() -> OpenAI:
-    return client_for("LLM")
 
 
 
@@ -44,21 +42,22 @@ def complete_json(
 
     Uses JSON-mode response_format so the result is always parseable.
     """
-    client = _client()
-    selected_model = model or MODEL
-    resp = client.chat.completions.create(
-        model=selected_model,
-        temperature=temperature,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    record_usage(purpose="chat_json", model=selected_model,
-                 usage=getattr(resp, "usage", None))
-    content = resp.choices[0].message.content or "{}"
-    return json.loads(content)
+    def call(client: OpenAI, endpoint_model: Optional[str]):
+        selected = model or endpoint_model or MODEL
+        resp = client.chat.completions.create(
+            model=selected,
+            temperature=temperature,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        record_usage(purpose="chat_json", model=selected,
+                     usage=getattr(resp, "usage", None))
+        return json.loads(resp.choices[0].message.content or "{}")
+
+    return execute("LLM", call)
 
 
 def complete_text(
@@ -68,16 +67,18 @@ def complete_text(
     temperature: float = 0.3,
     model: Optional[str] = None,
 ) -> str:
-    client = _client()
-    selected_model = model or MODEL
-    resp = client.chat.completions.create(
-        model=selected_model,
-        temperature=temperature,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    record_usage(purpose="chat_text", model=selected_model,
-                 usage=getattr(resp, "usage", None))
-    return resp.choices[0].message.content or ""
+    def call(client: OpenAI, endpoint_model: Optional[str]) -> str:
+        selected = model or endpoint_model or MODEL
+        resp = client.chat.completions.create(
+            model=selected,
+            temperature=temperature,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        record_usage(purpose="chat_text", model=selected,
+                     usage=getattr(resp, "usage", None))
+        return resp.choices[0].message.content or ""
+
+    return execute("LLM", call)

@@ -18,7 +18,7 @@ except ImportError:
 
 from openai import OpenAI
 
-from llm.provider import client_for
+from llm.provider import execute
 
 from core.costs import record_usage
 from lib.logging_config import get_logger
@@ -28,8 +28,6 @@ log = get_logger("llm.stt")
 MODEL = os.getenv("OPENAI_STT_MODEL", "gpt-4o-transcribe")
 
 
-def _client() -> OpenAI:
-    return client_for("STT")
 
 
 
@@ -58,20 +56,22 @@ def transcribe_audio(
     `_echoes_prompt` below is the backstop for any caller that decides the
     trade is worth it.
     """
-    client = _client()
-    log.info("transcribe model=%s lang=%s filename=%s prompt_chars=%d",
-             MODEL, language, filename, len(prompt))
-    resp = client.audio.transcriptions.create(
-        model=MODEL,
-        file=(filename, audio),
-        language=language,
-        **({"prompt": prompt} if prompt else {}),
-    )
-    text = resp
-    if hasattr(resp, "text"):
-        text = resp.text
-    record_usage(purpose="audio_transcription", model=MODEL,
-                 usage=getattr(resp, "usage", None))
+    def call(client: OpenAI, endpoint_model):
+        selected = endpoint_model or MODEL
+        log.info("transcribe model=%s lang=%s filename=%s prompt_chars=%d",
+                 selected, language, filename, len(prompt))
+        resp = client.audio.transcriptions.create(
+            model=selected,
+            file=(filename, audio),
+            language=language,
+            **({"prompt": prompt} if prompt else {}),
+        )
+        record_usage(purpose="audio_transcription", model=selected,
+                     usage=getattr(resp, "usage", None))
+        return resp
+
+    resp = execute("STT", call)
+    text = resp.text if hasattr(resp, "text") else resp
     out = str(text).strip()
     if prompt and _echoes_prompt(out, prompt):
         log.warning("transcript echoed the prompt; discarded as unintelligible")

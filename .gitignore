@@ -8,6 +8,7 @@ dist/
 
 # Virtual env
 .venv/
+venv/
 
 # Env / secrets
 .env
@@ -23,3 +24,4 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+providers.json

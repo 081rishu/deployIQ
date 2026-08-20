@@ -17,7 +17,7 @@ except ImportError:
 
 from openai import OpenAI
 
-from llm.provider import client_for
+from llm.provider import execute
 
 from core.costs import record_usage
 from lib.logging_config import get_logger
@@ -28,17 +28,18 @@ MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 VOICE = os.getenv("OPENAI_TTS_VOICE", "alloy")
 
 
-def _client() -> OpenAI:
-    return client_for("TTS")
 
 
 
 def synthesize(text: str, *, voice: str = VOICE) -> bytes:
     """Return the spoken audio for `text` as raw bytes (mp3)."""
-    client = _client()
-    log.info("synthesize model=%s voice=%s chars=%d", MODEL, voice, len(text))
-    resp = client.audio.speech.create(model=MODEL, voice=voice, input=text)
-    record_usage(purpose="audio_speech", model=MODEL,
-                 usage=getattr(resp, "usage", None))
-    log.info("synthesize done bytes=%d", len(resp.content))
-    return resp.content
+    def call(client: OpenAI, endpoint_model):
+        selected = endpoint_model or MODEL
+        log.info("synthesize model=%s voice=%s chars=%d", selected, voice, len(text))
+        resp = client.audio.speech.create(model=selected, voice=voice, input=text)
+        record_usage(purpose="audio_speech", model=selected,
+                     usage=getattr(resp, "usage", None))
+        log.info("synthesize done bytes=%d", len(resp.content))
+        return resp.content
+
+    return execute("TTS", call)

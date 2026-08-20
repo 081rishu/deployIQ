@@ -740,6 +740,86 @@ def case_speech_optional() -> None:
         voice_api._base64_audio = orig_audio
 
 
+def case_provider_pool() -> None:
+    """Multiple keys across multiple providers: spread, fail over, don't burn."""
+    print("\nPROVIDER POOL — key rotation and failover across Groq/Gemini")
+    import llm.provider as prov
+
+    pool_json = json.dumps({"LLM": [
+        {"base_url": "https://api.groq.com/openai/v1",
+         "model": "llama-3.3-70b-versatile", "keys": ["gsk_one", "gsk_two"]},
+        {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+         "model": "gemini-2.0-flash", "keys": ["AIza_one"]}]})
+    prior = os.environ.get("DEPLOYIQ_PROVIDER_POOL")
+    os.environ["DEPLOYIQ_PROVIDER_POOL"] = pool_json
+    prov.reset()
+    try:
+        eps = prov.pool("LLM").endpoints
+        check("pool-A", len(eps) == 3,
+              "every key across both providers becomes an endpoint")
+        check("pool-B", [e.model for e in eps].count("llama-3.3-70b-versatile") == 2
+              and "gemini-2.0-flash" in [e.model for e in eps],
+              "the model travels with the endpoint — the pool spans providers")
+        check("pool-C", all("gsk_one" not in e.label and "AIza_one" not in e.label
+                            for e in eps),
+              "an endpoint label carries a host and a fingerprint, never the key")
+
+        # Work spreads instead of hammering the first key until it dies.
+        firsts = {prov.pool("LLM").ordered()[0].label for _ in range(3)}
+        check("pool-D", len(firsts) == 3, "successive calls start on different keys")
+
+        # Exhausted endpoints are skipped and the next one answers.
+        class _RateLimit(Exception):
+            pass
+        _RateLimit.__name__ = "RateLimitError"
+        seen: list[str] = []
+
+        def spend_two(client, model):
+            seen.append(model or "")
+            if len(seen) <= 2:
+                raise _RateLimit("rate limited")
+            return "answered"
+
+        prov.reset()
+        check("pool-E", prov.execute("LLM", spend_two) == "answered",
+              "a call survives two exhausted keys by failing over to a third")
+        check("pool-F", len(seen) == 3, "each endpoint was tried exactly once")
+
+        # A malformed request must NOT be retried around the pool.
+        prov.reset()
+        tried: list[int] = []
+
+        def bad_request(client, model):
+            tried.append(1)
+            raise ValueError("invalid request payload")
+
+        try:
+            prov.execute("LLM", bad_request)
+        except ValueError:
+            pass
+        check("pool-G", len(tried) == 1,
+              "a bad request fails immediately rather than burning every key on it")
+
+        # When everything is spent the error says so, and names no key.
+        prov.reset()
+        def always_spent(client, model):
+            raise _RateLimit("rate limited")
+        try:
+            prov.execute("LLM", always_spent)
+            exhausted_msg = ""
+        except prov.ProvidersExhausted as exc:
+            exhausted_msg = str(exc)
+        check("pool-H", "exhausted" in exhausted_msg
+              and "gsk_one" not in exhausted_msg,
+              "exhaustion is reported as exhaustion, without leaking a key")
+    finally:
+        if prior is None:
+            os.environ.pop("DEPLOYIQ_PROVIDER_POOL", None)
+        else:
+            os.environ["DEPLOYIQ_PROVIDER_POOL"] = prior
+        prov.reset()
+
+
 def main() -> None:
     client = TestClient(api_main.app)
     case_A_B_C(client)
@@ -750,6 +830,7 @@ def main() -> None:
     case_voice_resume()
     case_voice_turn_failure_is_survivable()
     case_speech_optional()
+    case_provider_pool()
     case_platform_core()
     case_operational_core()
 
