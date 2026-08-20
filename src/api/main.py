@@ -16,13 +16,21 @@ from calc.ai_state import LaborRealization
 from core.config import Settings
 from core.logging import configure_logging
 from core.middleware import install_api_observability
+from core.logging import get_logger
 from core.paths import static_path
+from llm import provider
 from pipeline import orchestrate
 from report.schema import LaborRealizationSource, ReportMode
 from schemas.assessment_state import AssessmentState
 
 settings = Settings.from_env()
 configure_logging(settings)
+
+# Which endpoints each leg resolved to, so a misconfigured pool is visible at
+# boot rather than as a confusing failure mid-interview. Labels are host plus
+# key fingerprint; no key is ever logged.
+for _leg, _where in provider.describe().items():
+    get_logger("api.main").info("provider leg=%s endpoints=%s", _leg, _where)
 
 app = FastAPI(title="AI Deployment Decision Engine")
 app.add_middleware(

@@ -135,12 +135,20 @@ def _pool_config() -> dict:
 
 
 def _build(leg: Leg) -> Pool:
+    config = _pool_config()
     endpoints: list[Endpoint] = []
-    for entry in _pool_config().get(leg, []) or []:
+    for entry in config.get(leg) or []:
         keys = entry.get("keys") or ([entry["api_key"]] if entry.get("api_key") else [])
         for key in keys:
             endpoints.append(Endpoint(base_url=entry.get("base_url") or None,
                                       api_key=key, model=entry.get("model") or None))
+    # A leg named in the pool file is authoritative, INCLUDING when it is
+    # empty. "TTS": [] means "this deployment has no speech", not "look
+    # elsewhere" — without this an unrelated OPENAI_API_KEY in a .env.local
+    # gets picked up and every turn pays a doomed call before degrading.
+    if leg in config:
+        return Pool(leg=leg, endpoints=endpoints)
+
     if not endpoints:
         base = (os.getenv(f"DEPLOYIQ_{leg}_BASE_URL")
                 or os.getenv("OPENAI_BASE_URL") or None)
