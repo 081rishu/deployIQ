@@ -78,6 +78,10 @@ class Endpoint:
     # only and rejects the SDK's mp3 default, while OpenAI speaks mp3. The
     # format belongs to the endpoint for the same reason the model does.
     audio_format: Optional[str] = None
+    # Voice names are provider-specific too: OpenAI has "alloy", Orpheus has
+    # [autumn diana hannah austin daniel troy] and rejects anything else. A
+    # global default silently fails whichever provider does not share it.
+    voice: Optional[str] = None
     cooldown_until: float = 0.0
 
     @property
@@ -147,7 +151,8 @@ def _build(leg: Leg) -> Pool:
             endpoints.append(Endpoint(
                 base_url=entry.get("base_url") or None, api_key=key,
                 model=entry.get("model") or None,
-                audio_format=entry.get("audio_format") or None))
+                audio_format=entry.get("audio_format") or None,
+                voice=entry.get("voice") or None))
     # A leg named in the pool file is authoritative, INCLUDING when it is
     # empty. "TTS": [] means "this deployment has no speech", not "look
     # elsewhere" — without this an unrelated OPENAI_API_KEY in a .env.local

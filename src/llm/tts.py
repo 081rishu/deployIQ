@@ -7,6 +7,7 @@ Server-side only.
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 try:
     from dotenv import load_dotenv
@@ -33,7 +34,7 @@ FORMAT = os.getenv("OPENAI_TTS_FORMAT", "mp3")
 
 
 
-def synthesize(text: str, *, voice: str = VOICE) -> tuple[bytes, str]:
+def synthesize(text: str, *, voice: Optional[str] = None) -> tuple[bytes, str]:
     """Return the spoken audio for `text`, with the container it came back in.
 
     The format is returned rather than assumed because it is not the caller's
@@ -45,9 +46,10 @@ def synthesize(text: str, *, voice: str = VOICE) -> tuple[bytes, str]:
     def call(client: OpenAI, endpoint) -> tuple[bytes, str]:
         selected = endpoint.model or MODEL
         fmt = endpoint.audio_format or FORMAT
+        chosen_voice = voice or endpoint.voice or VOICE
         log.info("synthesize model=%s voice=%s fmt=%s chars=%d",
-                 selected, voice, fmt, len(text))
-        resp = client.audio.speech.create(model=selected, voice=voice,
+                 selected, chosen_voice, fmt, len(text))
+        resp = client.audio.speech.create(model=selected, voice=chosen_voice,
                                           response_format=fmt, input=text)
         record_usage(purpose="audio_speech", model=selected,
                      usage=getattr(resp, "usage", None))
