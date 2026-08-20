@@ -413,7 +413,7 @@ def case_voice_transport_and_cors() -> None:
 
         voice_session_mod.transcribe_audio = fake_transcribe
         voice_session_mod.run_turn = fake_run_turn
-        voice_api._base64_audio = lambda _text: "mock-audio"
+        voice_api._base64_audio = lambda _text: ("mock-audio", "mp3")
 
         ws = _FakeWebSocket([
             {"type": "websocket.receive", "bytes": b"before"},
@@ -589,7 +589,7 @@ def case_voice_resume() -> None:
                               question="next question", acknowledgment="ack")
 
         voice_session_mod.run_turn = counting_run_turn
-        voice_api._base64_audio = lambda text: f"audio:{text}"
+        voice_api._base64_audio = lambda text: (f"audio:{text}", "wav")
 
         started = AssessmentState(sector=Sector.CUSTOMER_SUPPORT, problem="ticket backlog")
         started.turn_count = 1
@@ -614,6 +614,9 @@ def case_voice_resume() -> None:
               "the client's own AssessmentState is adopted, not a fresh one")
         check("resume-D", ready.get("audio") == "audio:Hello there. What is your name?",
               "`speak` is synthesized so the first question is still voiced")
+        check("resume-D2", ready.get("audio_format") == "wav",
+              "the container travels with the audio — Orpheus returns wav, not mp3, "
+              "and the browser cannot guess")
 
         # Without `speak` there is nothing to say and no TTS call is made.
         ws2 = _FakeWebSocket([

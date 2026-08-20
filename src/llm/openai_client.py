@@ -42,8 +42,8 @@ def complete_json(
 
     Uses JSON-mode response_format so the result is always parseable.
     """
-    def call(client: OpenAI, endpoint_model: Optional[str]):
-        selected = model or endpoint_model or MODEL
+    def call(client: OpenAI, endpoint):
+        selected = model or endpoint.model or MODEL
         resp = client.chat.completions.create(
             model=selected,
             temperature=temperature,
@@ -67,8 +67,8 @@ def complete_text(
     temperature: float = 0.3,
     model: Optional[str] = None,
 ) -> str:
-    def call(client: OpenAI, endpoint_model: Optional[str]) -> str:
-        selected = model or endpoint_model or MODEL
+    def call(client: OpenAI, endpoint) -> str:
+        selected = model or endpoint.model or MODEL
         resp = client.chat.completions.create(
             model=selected,
             temperature=temperature,

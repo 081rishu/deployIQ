@@ -148,8 +148,8 @@ class VoiceSession:
         self.context = result.context
         return result
 
-    def speech_for(self, result: TurnResult) -> bytes:
-        """Synthesize the interviewer's reply text into audio."""
+    def speech_for(self, result: TurnResult) -> tuple[bytes, str]:
+        """Synthesize the reply, returning the audio and its container."""
         text = self._reply_text(result)
         log.info("speech_generated chars=%d", len(text))
         return synthesize(text)

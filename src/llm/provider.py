@@ -74,6 +74,10 @@ class Endpoint:
     base_url: Optional[str]
     api_key: str
     model: Optional[str] = None
+    # Providers disagree about audio containers: Groq's Orpheus emits WAV
+    # only and rejects the SDK's mp3 default, while OpenAI speaks mp3. The
+    # format belongs to the endpoint for the same reason the model does.
+    audio_format: Optional[str] = None
     cooldown_until: float = 0.0
 
     @property
@@ -140,8 +144,10 @@ def _build(leg: Leg) -> Pool:
     for entry in config.get(leg) or []:
         keys = entry.get("keys") or ([entry["api_key"]] if entry.get("api_key") else [])
         for key in keys:
-            endpoints.append(Endpoint(base_url=entry.get("base_url") or None,
-                                      api_key=key, model=entry.get("model") or None))
+            endpoints.append(Endpoint(
+                base_url=entry.get("base_url") or None, api_key=key,
+                model=entry.get("model") or None,
+                audio_format=entry.get("audio_format") or None))
     # A leg named in the pool file is authoritative, INCLUDING when it is
     # empty. "TTS": [] means "this deployment has no speech", not "look
     # elsewhere" — without this an unrelated OPENAI_API_KEY in a .env.local
@@ -186,12 +192,12 @@ def _is_exhausted(exc: Exception) -> bool:
     return getattr(exc, "status_code", None) in (401, 403, 429)
 
 
-def execute(leg: Leg, call: Callable[[OpenAI, Optional[str]], Any],
-            *, model: Optional[str] = None) -> Any:
+def execute(leg: Leg, call: Callable[[OpenAI, "Endpoint"], Any]) -> Any:
     """Run `call` against the first endpoint that answers.
 
-    `call` receives an SDK client and the model for that endpoint — the model
-    travels with the endpoint because the pool can span providers.
+    `call` receives an SDK client and the endpoint itself, so the model and
+    the audio container travel with it — the pool spans providers that agree
+    on neither.
 
     An exhausted endpoint is cooled down and the next is tried. Anything else
     propagates immediately: a malformed request is not fixed by another key,
@@ -209,7 +215,7 @@ def execute(leg: Leg, call: Callable[[OpenAI, Optional[str]], Any],
         client = OpenAI(api_key=endpoint.api_key,
                         **({"base_url": endpoint.base_url} if endpoint.base_url else {}))
         try:
-            return call(client, model or endpoint.model)
+            return call(client, endpoint)
         except Exception as exc:  # noqa: BLE001 - classified immediately below
             if not _is_exhausted(exc):
                 raise

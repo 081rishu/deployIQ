@@ -56,8 +56,8 @@ def transcribe_audio(
     `_echoes_prompt` below is the backstop for any caller that decides the
     trade is worth it.
     """
-    def call(client: OpenAI, endpoint_model):
-        selected = endpoint_model or MODEL
+    def call(client: OpenAI, endpoint):
+        selected = endpoint.model or MODEL
         log.info("transcribe model=%s lang=%s filename=%s prompt_chars=%d",
                  selected, language, filename, len(prompt))
         resp = client.audio.transcriptions.create(

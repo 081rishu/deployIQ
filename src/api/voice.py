@@ -59,7 +59,7 @@ def _payload(result: TurnResult, extra: dict | None = None) -> dict:
     text = (result.acknowledgment or "") + " " + (result.question or "")
     if text.strip():
         try:
-            data["audio"] = _base64_audio(text)
+            data["audio"], data["audio_format"] = _base64_audio(text)
         except Exception:  # noqa: BLE001 - degrade to text, never lose the turn
             log.warning("speech_unavailable; returning the turn without audio",
                         exc_info=True)
@@ -67,9 +67,11 @@ def _payload(result: TurnResult, extra: dict | None = None) -> dict:
     return data
 
 
-def _base64_audio(text: str) -> str:
+def _base64_audio(text: str) -> tuple[str, str]:
+    """Base64 audio plus the container it is in, so the client can play it."""
     from llm.tts import synthesize
-    return base64.b64encode(synthesize(text)).decode("ascii")
+    audio, fmt = synthesize(text)
+    return base64.b64encode(audio).decode("ascii"), fmt
 
 
 def _turn_error_message(exc: Exception) -> str:
@@ -168,7 +170,11 @@ async def voice_interview(ws: WebSocket) -> None:
                         "updated_fields": [],
                     }
                     if speak:
-                        payload["audio"] = _base64_audio(speak)
+                        try:
+                            payload["audio"], payload["audio_format"] = _base64_audio(speak)
+                        except Exception:  # noqa: BLE001 - a mute resume is fine
+                            log.warning("speech_unavailable on resume", exc_info=True)
+                            payload["speech_unavailable"] = True
                     await ws.send_json(payload)
                 elif action == "start":
                     sector = Sector(msg.get("sector", "customer_support"))

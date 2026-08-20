@@ -26,20 +26,32 @@ log = get_logger("llm.tts")
 
 MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 VOICE = os.getenv("OPENAI_TTS_VOICE", "alloy")
+# Only used when the endpoint does not declare its own container.
+FORMAT = os.getenv("OPENAI_TTS_FORMAT", "mp3")
 
 
 
 
 
-def synthesize(text: str, *, voice: str = VOICE) -> bytes:
-    """Return the spoken audio for `text` as raw bytes (mp3)."""
-    def call(client: OpenAI, endpoint_model):
-        selected = endpoint_model or MODEL
-        log.info("synthesize model=%s voice=%s chars=%d", selected, voice, len(text))
-        resp = client.audio.speech.create(model=selected, voice=voice, input=text)
+def synthesize(text: str, *, voice: str = VOICE) -> tuple[bytes, str]:
+    """Return the spoken audio for `text`, with the container it came back in.
+
+    The format is returned rather than assumed because it is not the caller's
+    choice: Groq's Orpheus emits WAV only and rejects the SDK's mp3 default,
+    OpenAI speaks mp3. The browser needs the right MIME type to play it, so
+    the container travels with the bytes instead of being hardcoded at both
+    ends.
+    """
+    def call(client: OpenAI, endpoint) -> tuple[bytes, str]:
+        selected = endpoint.model or MODEL
+        fmt = endpoint.audio_format or FORMAT
+        log.info("synthesize model=%s voice=%s fmt=%s chars=%d",
+                 selected, voice, fmt, len(text))
+        resp = client.audio.speech.create(model=selected, voice=voice,
+                                          response_format=fmt, input=text)
         record_usage(purpose="audio_speech", model=selected,
                      usage=getattr(resp, "usage", None))
         log.info("synthesize done bytes=%d", len(resp.content))
-        return resp.content
+        return resp.content, fmt
 
     return execute("TTS", call)
