@@ -24,6 +24,40 @@ from schemas.assessment_state import AssessmentState
 
 log = get_logger("interviewer.voice")
 
+# Domain vocabulary handed to the transcription model as a decoding hint.
+#
+# These are terms a general speech model reliably gets wrong — "FCR" becomes
+# "F-C-R", "straight-through processing" becomes "straight through
+# processing", "n8n" becomes almost anything. Naming them raises the odds the
+# transcript says what the user actually said.
+#
+# Deliberately contains no numbers, no expected answers and no phrasing the
+# user might not have used: a transcription prompt biases output, so anything
+# beyond terminology risks inventing assessment input. See llm/stt.py.
+_COMMON_VOCABULARY = (
+    "workflow, process, headcount, monthly volume, handling time, automation, "
+    "human in the loop, escalation, integration, compliance, GDPR, HIPAA, "
+    "SOC 2, on-premise, accuracy, throughput, backlog"
+)
+_SECTOR_VOCABULARY = {
+    "customer_support": (
+        "customer support, support agent, ticket, tickets, first-contact "
+        "resolution, FCR, escalation rate, rework rate, Zendesk, helpdesk"
+    ),
+    "document_processing": (
+        "document processing, invoice, invoices, accounts payable, AP clerk, "
+        "straight-through processing, STP rate, exception rate, first-pass "
+        "yield, three-way match, purchase order, OCR, extraction"
+    ),
+}
+
+
+def transcription_vocabulary(sector) -> str:
+    """The decoding hint for one sector. Terminology only."""
+    key = getattr(sector, "value", str(sector or ""))
+    sector_terms = _SECTOR_VOCABULARY.get(key, "")
+    return ", ".join(t for t in (sector_terms, _COMMON_VOCABULARY) if t)
+
 
 def _detect_filename(audio: bytes) -> str:
     """Guess the audio container from magic bytes for OpenAI transcription.
@@ -102,7 +136,9 @@ class VoiceSession:
 
         name = filename or _detect_filename(audio)
         log.info("respond audio_bytes=%d filename=%s", len(audio) if isinstance(audio, (bytes, bytearray)) else -1, name)
-        transcript = transcribe_audio(audio, language=language, filename=name)
+        transcript = transcribe_audio(
+            audio, language=language, filename=name,
+            prompt=transcription_vocabulary(self.state.sector))
         self.last_transcript = transcript
         log.info("transcript_received chars=%d", len(transcript))
         result = run_turn(self.state, transcript, self.context)
