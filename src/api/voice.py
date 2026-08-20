@@ -51,9 +51,19 @@ def _payload(result: TurnResult, extra: dict | None = None) -> dict:
     if extra:
         data.update(extra)
     # Attach spoken audio for the reply text when there is something to say.
+    #
+    # Speech is the leg most likely to be missing: it is the one a free or
+    # low-cost provider tends not to offer. A turn without audio is still a
+    # complete turn — the question is on screen either way — so a synthesis
+    # failure costs the voice, not the answer.
     text = (result.acknowledgment or "") + " " + (result.question or "")
     if text.strip():
-        data["audio"] = _base64_audio(text)
+        try:
+            data["audio"] = _base64_audio(text)
+        except Exception:  # noqa: BLE001 - degrade to text, never lose the turn
+            log.warning("speech_unavailable; returning the turn without audio",
+                        exc_info=True)
+            data["speech_unavailable"] = True
     return data
 
 

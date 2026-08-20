@@ -696,6 +696,50 @@ def case_voice_turn_failure_is_survivable() -> None:
         voice_api._base64_audio = orig_audio
 
 
+def case_speech_optional() -> None:
+    """A turn survives losing its voice."""
+    print("\nVOICE/DEGRADE — speech synthesis is optional, the turn is not")
+    orig_transcribe = voice_session_mod.transcribe_audio
+    orig_run_turn = voice_session_mod.run_turn
+    orig_audio = voice_api._base64_audio
+    try:
+        voice_session_mod.transcribe_audio = lambda audio, **_k: "eight thousand tickets"
+        voice_session_mod.run_turn = lambda st, m, c=None: TurnResult(
+            state=st, context=c or ConversationContext(),
+            status=InterviewStatus.INTERVIEWING, stop=False,
+            question="next question", acknowledgment="ack")
+
+        def no_speech(_text):
+            raise RuntimeError("model_not_found: this provider serves no TTS")
+        voice_api._base64_audio = no_speech
+
+        started = AssessmentState(sector=Sector.CUSTOMER_SUPPORT, problem="backlog")
+        ws = _FakeWebSocket([
+            {"type": "websocket.receive", "text": json.dumps({
+                "action": "resume", "state": started.model_dump(mode="json"),
+                "context": None})},
+            {"type": "websocket.receive", "bytes": b"audio"},
+            {"type": "websocket.disconnect"},
+        ])
+        asyncio.run(voice_api.voice_interview(ws))
+        turns = [m for m in ws.sent if m.get("type") == "turn"]
+        errors = [m for m in ws.sent if m.get("type") in ("error", "turn_error")]
+
+        check("degrade-A", len(turns) == 1,
+              "the turn is still delivered when speech synthesis fails")
+        check("degrade-B", turns and turns[0].get("question") == "next question",
+              "the question survives — it is on screen whether or not it is spoken")
+        check("degrade-C", turns and "audio" not in turns[0]
+              and turns[0].get("speech_unavailable") is True,
+              "the missing voice is declared rather than sent as empty audio")
+        check("degrade-D", not errors,
+              "losing speech is not reported to the user as a failed turn")
+    finally:
+        voice_session_mod.transcribe_audio = orig_transcribe
+        voice_session_mod.run_turn = orig_run_turn
+        voice_api._base64_audio = orig_audio
+
+
 def main() -> None:
     client = TestClient(api_main.app)
     case_A_B_C(client)
@@ -705,6 +749,7 @@ def main() -> None:
     case_voice_transport_and_cors()
     case_voice_resume()
     case_voice_turn_failure_is_survivable()
+    case_speech_optional()
     case_platform_core()
     case_operational_core()
 

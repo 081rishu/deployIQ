@@ -15,6 +15,8 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from llm.provider import client_for
+
 from core.costs import record_usage
 
 # Load the key from .env (README/.env.example), with .env.local taking
@@ -27,12 +29,8 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 
 def _client() -> OpenAI:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set — copy .env.example to .env and fill it in"
-        )
-    return OpenAI(api_key=api_key)
+    return client_for("LLM")
+
 
 
 def complete_json(
